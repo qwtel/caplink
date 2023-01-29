@@ -36,14 +36,7 @@ export interface ProxyMarked {
  *
  * This is the inverse of `Unpromisify<T>`.
  */
-type Promisify<T> = T extends Promise<unknown> ? T : Promise<T>;
-/**
- * Takes a type that may be Promise and unwraps the Promise type.
- * If `P` is not a Promise, it returns `P`.
- *
- * This is the inverse of `Promisify<T>`.
- */
-type Unpromisify<P> = P extends Promise<infer T> ? T : P;
+type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
 
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
@@ -68,7 +61,7 @@ type RemoteProperty<T> =
  */
 type LocalProperty<T> = T extends Function | ProxyMarked
   ? Local<T>
-  : Unpromisify<T>;
+  : Awaited<T>;
 
 /**
  * Proxies `T` if it is a `ProxyMarked`, clones it otherwise (as handled by structured cloning and transfer handlers).
@@ -121,7 +114,7 @@ export type Remote<T> =
     (T extends (...args: infer TArguments) => infer TReturn
       ? (
           ...args: { [I in keyof TArguments]: UnproxyOrClone<TArguments[I]> }
-        ) => Promisify<ProxyOrClone<Unpromisify<TReturn>>>
+        ) => Promisify<ProxyOrClone<Awaited<TReturn>>>
       : unknown) &
     // Handle construct signature (if present)
     // The return of construct signatures is always proxied (whether marked or not)
@@ -156,7 +149,7 @@ export type Local<T> =
       ? (
           ...args: { [I in keyof TArguments]: ProxyOrClone<TArguments[I]> }
         ) => // The raw function could either be sync or async, but is always proxied automatically
-        MaybePromise<UnproxyOrClone<Unpromisify<TReturn>>>
+        MaybePromise<UnproxyOrClone<Awaited<TReturn>>>
       : unknown) &
     // Handle construct signature (if present)
     // The return of construct signatures is always proxied (whether marked or not)
@@ -167,12 +160,14 @@ export type Local<T> =
               [I in keyof TArguments]: ProxyOrClone<TArguments[I]>;
             }
           ): // The raw constructor could either be sync or async, but is always proxied automatically
-          MaybePromise<Local<Unpromisify<TInstance>>>;
+          MaybePromise<Local<Awaited<TInstance>>>;
         }
       : unknown);
 
 const isObject = (val: unknown): val is object =>
   (typeof val === "object" && val !== null) || typeof val === "function";
+
+type TransferableTuple<T> = [value: T, transferables?: Transferable[]];
 
 /**
  * Customizes the serialization of certain values as determined by `canHandle()`.
@@ -193,7 +188,7 @@ export interface TransferHandler<T, S> {
    * value that can be sent in a message, consisting of structured-cloneable
    * values and/or transferrable objects.
    */
-  serialize(value: T): [S, Transferable[]];
+  serialize(value: T): TransferableTuple<S>;
 
   /**
    * Gets called to deserialize an incoming value that was serialized in the
@@ -561,7 +556,7 @@ export function windowEndpoint(
   };
 }
 
-function toWireValue(value: any): [WireValue, Transferable[]] {
+function toWireValue(value: any): TransferableTuple<WireValue> {
   for (const [name, handler] of transferHandlers) {
     if (handler.canHandle(value)) {
       const [serializedValue, transferables] = handler.serialize(value);
