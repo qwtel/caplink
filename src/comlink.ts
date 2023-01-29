@@ -303,11 +303,9 @@ export function expose(
       console.warn(`Invalid origin '${ev.origin}' for comlink proxy`);
       return;
     }
-    const { id, type, path } = {
-      path: [] as string[],
-      ...(ev.data as Message),
-    };
-    const argumentList = (ev.data.argumentList || []).map(fromWireValue);
+    ev.data.path ||= [];
+    const { id, type, path } = ev.data as Message & { path: string[] }
+    const argumentList = (ev.data.argumentList as any[] || []).map(fromWireValue);
     let returnValue;
     try {
       const parent = path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
@@ -359,7 +357,8 @@ export function expose(
       })
       .then((returnValue) => {
         const [wireValue, transferables] = toWireValue(returnValue);
-        ep.postMessage({ ...wireValue, id }, transferables);
+        wireValue.id = id;
+        ep.postMessage(wireValue, transferables);
         if (type === MessageType.RELEASE) {
           // detach and deactive after sending release response above.
           ep.removeEventListener("message", callback as any);
@@ -375,7 +374,8 @@ export function expose(
           value: new TypeError("Unserializable return value"),
           [throwMarker]: 0,
         });
-        ep.postMessage({ ...wireValue, id }, transferables);
+        wireValue.id = id;
+        ep.postMessage(wireValue, transferables);
       });
   } as any);
   if (ep.start) {
@@ -610,12 +610,13 @@ function requestResponseMessage(
     if (ep.start) {
       ep.start();
     }
-    ep.postMessage({ id, ...msg }, transfers);
+    msg.id = id;
+    ep.postMessage(msg, transfers);
   });
 }
 
 function generateUUID(): string {
-  return new Array(4)
+  return crypto.randomUUID?.() ?? new Array(4)
     .fill(0)
     .map(() => Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16))
     .join("-");
