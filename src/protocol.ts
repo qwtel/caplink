@@ -4,19 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export interface EventSource {
-  addEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject,
-    options?: {}
-  ): void;
+import { TypedEventTarget } from "../../typed-event-target";
 
-  removeEventListener(
-    type: string,
-    listener: EventListenerOrEventListenerObject,
-    options?: {}
-  ): void;
-}
+export type ReceiverEndpoint = Pick<TypedEventTarget<MessagePortEventMap>, "addEventListener"|"removeEventListener">;
 
 export interface PostMessageWithOrigin {
   postMessage(
@@ -26,9 +16,8 @@ export interface PostMessageWithOrigin {
   ): void;
 }
 
-export interface Endpoint extends EventSource {
+export interface Endpoint extends ReceiverEndpoint {
   postMessage(message: any, transfer?: Transferable[]): void;
-
   start?: () => void;
 }
 

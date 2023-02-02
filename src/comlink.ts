@@ -6,7 +6,7 @@
 
 import {
   Endpoint,
-  EventSource,
+  ReceiverEndpoint,
   Message,
   MessageType,
   PostMessageWithOrigin,
@@ -290,7 +290,7 @@ export function expose(
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
-  ep.addEventListener("message", function callback(ev: MessageEvent) {
+  ep.addEventListener("message", function callback(ev) {
     if (!ev || !ev.data) {
       return;
     }
@@ -356,7 +356,7 @@ export function expose(
         ep.postMessage(wireValue, transferables);
         if (type === MessageType.RELEASE) {
           // detach and deactive after sending release response above.
-          ep.removeEventListener("message", callback as any);
+          ep.removeEventListener("message", callback);
           closeEndPoint(ep);
           if (finalizer in obj && typeof obj[finalizer] === "function") {
             obj[finalizer]();
@@ -372,7 +372,7 @@ export function expose(
         wireValue.id = id;
         ep.postMessage(wireValue, transferables);
       });
-  } as any);
+  });
   if (ep.start) {
     ep.start();
   }
@@ -548,7 +548,7 @@ export function proxy<T extends {}>(obj: T): T & ProxyMarked {
 
 export function windowEndpoint(
   w: PostMessageWithOrigin,
-  context: EventSource = globalThis,
+  context: ReceiverEndpoint = globalThis,
   targetOrigin = "*"
 ): Endpoint {
   return {
@@ -598,13 +598,13 @@ function requestResponseMessage(
 ): Promise<WireValue> {
   return new Promise((resolve) => {
     const id = generateUUID();
-    ep.addEventListener("message", function l(ev: MessageEvent) {
+    ep.addEventListener("message", function l(ev) {
       if (!ev.data || !ev.data.id || ev.data.id !== id) {
         return;
       }
-      ep.removeEventListener("message", l as any);
+      ep.removeEventListener("message", l);
       resolve(ev.data);
-    } as any);
+    });
     if (ep.start) {
       ep.start();
     }
