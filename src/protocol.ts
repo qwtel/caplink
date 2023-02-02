@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { TypedEventTarget } from "../../typed-event-target";
+import { TypedEventTarget } from "vendor/typed-event-target";
 
 export type ReceiverEndpoint = Pick<TypedEventTarget<MessagePortEventMap>, "addEventListener"|"removeEventListener">;
 

@@ -25,7 +25,7 @@ export default function nodeEndpoint(nep: NodeEndpoint): Endpoint {
   const listeners = new WeakMap();
   return {
     postMessage: nep.postMessage.bind(nep),
-    addEventListener: (_, eh) => {
+    addEventListener: (_: string, eh: any) => {
       const l = (data: any) => {
         if ("handleEvent" in eh) {
           eh.handleEvent({ data } as MessageEvent);
@@ -36,7 +36,7 @@ export default function nodeEndpoint(nep: NodeEndpoint): Endpoint {
       nep.on("message", l);
       listeners.set(eh, l);
     },
-    removeEventListener: (_, eh) => {
+    removeEventListener: (_: string, eh: any) => {
       const l = listeners.get(eh);
       if (!l) {
         return;
