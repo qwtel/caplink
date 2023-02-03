@@ -16,6 +16,8 @@ import {
 export type { Endpoint };
 
 export const proxyMarker = Symbol("Comlink.proxy");
+export const tupleMarker = Symbol("Comlink.tuple")
+export const recordMarker = Symbol("Comlink.record")
 export const createEndpoint = Symbol("Comlink.endpoint");
 export const releaseProxy = Symbol("Comlink.releaseProxy");
 export const finalizer = Symbol("Comlink.finalizer");
@@ -28,6 +30,14 @@ const throwMarker = Symbol("Comlink.thrown");
  */
 export interface ProxyMarked {
   [proxyMarker]: true;
+}
+
+export interface TupleMarked {
+  [tupleMarker]: true;
+}
+
+export interface RecordMarked {
+  [recordMarker]: true;
 }
 
 /**
@@ -66,13 +76,19 @@ type LocalProperty<T> = T extends Function | ProxyMarked
 /**
  * Proxies `T` if it is a `ProxyMarked`, clones it otherwise (as handled by structured cloning and transfer handlers).
  */
-export type ProxyOrClone<T> = T extends ProxyMarked ? Remote<T> : T;
+export type ProxyOrClone<T> = T extends TupleMarked|RecordMarked 
+  ? { [P in keyof T]: ProxyOrClone<T[P]> }
+  : T extends ProxyMarked 
+    ? Remote<T> 
+    : T;
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
-export type UnproxyOrClone<T> = T extends RemoteObject<ProxyMarked>
-  ? Local<T>
-  : T;
+export type UnproxyOrClone<T> = T extends RemoteObject<TupleMarked|RecordMarked>
+  ? { [P in keyof T ]: UnproxyOrClone<T[P]> }
+  : T extends RemoteObject<ProxyMarked>
+    ? Local<T>
+    : T;
 
 /**
  * Takes the raw type of a remote object in the other thread and returns the type as it is visible to the local thread
@@ -169,6 +185,8 @@ const isObject = (val: unknown): val is object =>
 
 type TransferableTuple<T> = [value: T, transferables?: Transferable[]];
 
+type Rec<T> = Record<PropertyKey, T>
+
 /**
  * Customizes the serialization of certain values as determined by `canHandle()`.
  *
@@ -201,9 +219,8 @@ export interface TransferHandler<T, S> {
 /**
  * Internal transfer handle to handle objects marked to proxy.
  */
-const proxyTransferHandler: TransferHandler<object, MessagePort> = {
-  canHandle: (val): val is ProxyMarked =>
-    isObject(val) && (val as ProxyMarked)[proxyMarker],
+const proxyTransferHandler = {
+  canHandle: (val): val is ProxyMarked => isObject(val) && (val as ProxyMarked)[proxyMarker],
   serialize(obj) {
     const { port1, port2 } = new MessageChannel();
     expose(obj, port1);
@@ -213,7 +230,19 @@ const proxyTransferHandler: TransferHandler<object, MessagePort> = {
     port.start();
     return wrap(port);
   },
-};
+} satisfies TransferHandler<object, MessagePort>;
+
+const tupleTransferHandler = {
+  canHandle: (val): val is any[] => Array.isArray(val) && (val as any)[tupleMarker],
+  serialize: (val) => processTuple(val),
+  deserialize: (val) => val.map(fromWireValue)
+} satisfies TransferHandler<any[], WireValue[]>;
+
+const recordTransferHandler = {
+  canHandle: (val): val is Rec<any> => val != null && typeof val === 'object' && (val as any)[recordMarker],
+  serialize: (val) => processRecord(val),
+  deserialize: (val) => Object.fromEntries(Object.entries(val).map(([k, v]) => [k, fromWireValue(v)])) // XXX: perf!
+} satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -266,6 +295,8 @@ export const transferHandlers = new Map<
   string,
   TransferHandler<unknown, unknown>
 >([
+  ["tuple", tupleTransferHandler],
+  ["record", recordTransferHandler],
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
 ]);
@@ -495,7 +526,7 @@ function createProxy<T>(
       if (last === "bind") {
         return createProxy(ep, path.slice(0, -1));
       }
-      const [argumentList, transferables] = processArguments(rawArgumentList);
+      const [argumentList, transferables] = processTuple(rawArgumentList);
       return requestResponseMessage(
         ep,
         {
@@ -508,7 +539,7 @@ function createProxy<T>(
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
-      const [argumentList, transferables] = processArguments(rawArgumentList);
+      const [argumentList, transferables] = processTuple(rawArgumentList);
       return requestResponseMessage(
         ep,
         {
@@ -524,7 +555,7 @@ function createProxy<T>(
   return proxy as any;
 }
 
-function processArguments(argumentList: any[]): TransferableTuple<WireValue[]> {
+function processTuple(argumentList: any[]): TransferableTuple<WireValue[]> {
   const length = argumentList.length;
   const values = new Array<WireValue>(length);
   const transferables = new Array<Transferable>();
@@ -536,6 +567,17 @@ function processArguments(argumentList: any[]): TransferableTuple<WireValue[]> {
   return [values, transferables];
 }
 
+function processRecord(argumentRec: Rec<any>): TransferableTuple<Rec<WireValue>> {
+  const transferables = new Array<Transferable>();
+  const obj = {} as Rec<WireValue>;
+  for (const key in argumentRec) {
+    const [v, ts] = toWireValue(argumentRec[key]);
+    obj[key] = v;
+    if (ts) transferables.push(...ts);
+  }
+  return [obj, transferables];
+}
+
 const transferCache = new WeakMap<any, Transferable[]>();
 export function transfer<T>(obj: T, transfers: Transferable[]): T {
   transferCache.set(obj, transfers);
@@ -543,7 +585,21 @@ export function transfer<T>(obj: T, transfers: Transferable[]): T {
 }
 
 export function proxy<T extends {}>(obj: T): T & ProxyMarked {
-  return Object.assign(obj, { [proxyMarker]: true }) as any;
+  const n = obj as T & ProxyMarked;
+  n[proxyMarker] = true;
+  return n;
+}
+
+export function tuple<T extends {}>(obj: T): T & TupleMarked {
+  const n = obj as T & TupleMarked;
+  n[tupleMarker] = true;
+  return n;
+}
+
+export function record<T extends {}>(obj: T): T & RecordMarked {
+  const n = obj as T & RecordMarked;
+  n[recordMarker] = true;
+  return n;
 }
 
 export function windowEndpoint(
