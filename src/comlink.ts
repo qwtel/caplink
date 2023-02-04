@@ -12,6 +12,7 @@ import {
   PostMessageWithOrigin,
   WireValue,
   WireValueType,
+  ReleaseMessage,
 } from "./protocol";
 export type { Endpoint };
 
@@ -183,7 +184,7 @@ export type Local<T> =
 const isObject = (val: unknown): val is object =>
   (typeof val === "object" && val !== null) || typeof val === "function";
 
-type TransferableTuple<T> = [value: T, transferables?: Transferable[]];
+type TransferableTuple<T> = [value: T, transferables: Transferable[]];
 
 type Rec<T> = Record<PropertyKey, T>
 
@@ -244,6 +245,37 @@ const recordTransferHandler = {
   deserialize: (val) => Object.fromEntries(Object.entries(val).map(([k, v]) => [k, fromWireValue(v)])) // XXX: perf!
 } satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
 
+const promiseTransferHandler = {
+  canHandle: (val): val is PromiseLike<any> => val != null && typeof val === 'object' && 'then' in val,
+  serialize: (val) => {
+    const { port1, port2 } = new MessageChannel();
+    val.then(
+      value => port1.postMessage(...toWireValue(value)),
+      value => port1.postMessage(...toWireValue({ value, [throwMarker]: 0 })),
+    );
+    nullFinalizers?.register(val, port1);
+    port1.start()
+    return [port2, [port2]]
+  },
+
+  deserialize: (port) => {
+    const promise = new Promise((resolve, reject) => {
+      port.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
+        if (ev.data != null) {
+          try {
+            resolve(fromWireValue(ev.data))
+          } catch (err) {
+            reject(err)
+          }
+        }
+        port.close();
+      }, { once: true });
+    });
+    port.start();
+    return promise;
+  }
+} satisfies TransferHandler<PromiseLike<any>, MessagePort>;
+
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
   value: unknown;
@@ -297,6 +329,7 @@ export const transferHandlers = new Map<
 >([
   ["tuple", tupleTransferHandler],
   ["record", recordTransferHandler],
+  ["promise", promiseTransferHandler],
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
 ]);
@@ -435,27 +468,21 @@ function releaseEndpoint(ep: Endpoint) {
   });
 }
 
-interface FinalizationRegistry<T> {
-  new (cb: (heldValue: T) => void): FinalizationRegistry<T>;
-  register(
-    weakItem: object,
-    heldValue: T,
-    unregisterToken?: object | undefined
-  ): void;
-  unregister(unregisterToken: object): void;
-}
-declare var FinalizationRegistry: FinalizationRegistry<Endpoint>;
-
 const proxyCounter = new WeakMap<Endpoint, number>();
-const proxyFinalizers =
-  "FinalizationRegistry" in globalThis &&
-  new FinalizationRegistry((ep: Endpoint) => {
+const proxyFinalizers = "FinalizationRegistry" in globalThis
+  ? new FinalizationRegistry((ep: Endpoint) => {
     const newCount = (proxyCounter.get(ep) || 0) - 1;
     proxyCounter.set(ep, newCount);
     if (newCount === 0) {
       releaseEndpoint(ep);
     }
-  });
+  }) : undefined;
+
+const nullFinalizers = "FinalizationRegistry" in globalThis ? 
+  new FinalizationRegistry((port: MessagePort) => {
+    port.postMessage(null)
+    port.close();
+  }) : undefined;
 
 function registerProxy(proxy: object, ep: Endpoint) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
@@ -616,6 +643,7 @@ export function windowEndpoint(
 }
 
 function toWireValue(value: any): TransferableTuple<WireValue> {
+  // console.log(value != null && typeof value === "object" && "then" in value)
   for (const [name, handler] of transferHandlers) {
     if (handler.canHandle(value)) {
       const [serializedValue, transferables] = handler.serialize(value);
