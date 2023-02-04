@@ -13,6 +13,8 @@ import {
   WireValue,
   WireValueType,
   ReleaseMessage,
+  IterMessage,
+  IterType,
 } from "./protocol";
 export type { Endpoint };
 
@@ -242,7 +244,7 @@ const tupleTransferHandler = {
 const recordTransferHandler = {
   canHandle: (val): val is Rec<any> => val != null && typeof val === 'object' && (val as any)[recordMarker],
   serialize: (val) => processRecord(val),
-  deserialize: (val) => Object.fromEntries(Object.entries(val).map(([k, v]) => [k, fromWireValue(v)])) // XXX: perf!
+  deserialize: (val) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue(val[k]); return ret }
 } satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
 
 const promiseTransferHandler = {
@@ -275,6 +277,88 @@ const promiseTransferHandler = {
     return promise;
   }
 } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
+
+async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: number) {
+  let returnValue;
+  try {
+    returnValue = record(await getReturnValue())
+  } catch (value) {
+    returnValue = { value, [throwMarker]: 0 };
+  }
+  try {
+      const [wireValue, transferables] = toWireValue(returnValue);
+      wireValue.id = id;
+      port.postMessage(wireValue, transferables);
+  } catch (error) {
+    // Send Serialization Error To Caller
+    const [wireValue, transferables] = toWireValue({
+      value: new TypeError("Unserializable return value"),
+      [throwMarker]: 0,
+    });
+    wireValue.id = id;
+    port.postMessage(wireValue, transferables);
+  };
+}
+
+const generatorTransferHandler = {
+  canHandle: (val): val is Generator|AsyncGenerator => 
+    val != null && typeof val === 'object' && 
+    'next' in val && 
+    'return' in val && 
+    'throw' in val && 
+    (Symbol.asyncIterator in val || Symbol.iterator in val),
+
+  serialize: (gen) => {
+    const { port1, port2 } = new MessageChannel();
+
+    port1.addEventListener("message", async function callback(ev: MessageEvent<IterMessage|null>) {
+      if (ev.data != null) {
+        const { type, id, value } = ev.data;
+        switch (type) {
+          case IterType.NEXT: 
+            return postIterMessage(port1, () => gen.next(fromWireValue(value)), id);
+          case IterType.RETURN:
+            return postIterMessage(port1, () => gen.return(fromWireValue(value)), id);
+          case IterType.THROW:
+            try { fromWireValue(value) } catch (err) {
+              postIterMessage(port1, () => gen.throw(err), id);
+            }
+        }
+      } else {
+        port1.removeEventListener("message", callback);
+        port1.close();
+      }
+    });
+
+    nullFinalizers?.register(gen, port1);
+    port1.start()
+    return [port2, [port2]]
+  },
+
+  deserialize: (port2) => {
+    const port = Object.assign(port2, { nr: 0 })
+    const generator: AsyncGenerator = {
+      async next(x) {
+        const [wireValue, transfer] = toWireValue(x);
+        const y = await requestNextMessage(port, { type: IterType.NEXT, value: wireValue }, transfer)
+        return fromWireValue(y)
+      },
+      async return(x) {
+        const [wireValue, transfer] = toWireValue(x);
+        const y = await requestNextMessage(port, { type: IterType.RETURN, value: wireValue }, transfer)
+        return fromWireValue(y)
+      },
+      async throw(e) {
+        const [wireValue, transfer] = toWireValue({ value: e, [throwMarker]: 0 });
+        const y = await requestNextMessage(port, { type: IterType.THROW, value: wireValue }, transfer)
+        return fromWireValue(y)
+      },
+      [Symbol.asyncIterator]() { return this },
+    };
+
+    return generator;
+  }
+} satisfies TransferHandler<Generator|AsyncGenerator, MessagePort>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -330,6 +414,7 @@ export const transferHandlers = new Map<
   ["tuple", tupleTransferHandler],
   ["record", recordTransferHandler],
   ["promise", promiseTransferHandler],
+  ["generator", generatorTransferHandler],
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
 ]);
@@ -437,9 +522,7 @@ export function expose(
         ep.postMessage(wireValue, transferables);
       });
   });
-  if (ep.start) {
-    ep.start();
-  }
+  ep.start?.();
 }
 
 function isMessagePort(endpoint: Endpoint): endpoint is MessagePort {
@@ -682,17 +765,35 @@ function requestResponseMessage(
 ): Promise<WireValue> {
   return new Promise((resolve) => {
     const id = generateUUID();
+    msg.id = id;
     ep.addEventListener("message", function l(ev) {
-      if (!ev.data || !ev.data.id || ev.data.id !== id) {
+      if (ev.data?.id !== id) {
         return;
       }
       ep.removeEventListener("message", l);
       resolve(ev.data);
     });
-    if (ep.start) {
-      ep.start();
-    }
+    ep.start?.();
+    ep.postMessage(msg, transfers);
+  });
+}
+
+function requestNextMessage(
+  ep: Endpoint & { nr: number },
+  msg: IterMessage,
+  transfers?: Transferable[]
+): Promise<WireValue> {
+  return new Promise((resolve) => {
+    const id = ++ep.nr;
     msg.id = id;
+    ep.addEventListener("message", function l(ev) {
+      if (ev.data?.id !== id) {
+        return;
+      }
+      ep.removeEventListener("message", l);
+      resolve(ev.data);
+    });
+    ep.start?.();
     ep.postMessage(msg, transfers);
   });
 }

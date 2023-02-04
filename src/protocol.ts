@@ -29,13 +29,13 @@ export const enum WireValueType {
 }
 
 export interface RawWireValue {
-  id?: string;
+  id?: string|number;
   type: WireValueType.RAW;
   value: {};
 }
 
 export interface HandlerWireValue {
-  id?: string;
+  id?: string|number;
   type: WireValueType.HANDLER;
   name: string;
   value: unknown;
@@ -89,6 +89,18 @@ export interface EndpointMessage {
 export interface ReleaseMessage {
   id?: MessageID;
   type: MessageType.RELEASE;
+}
+
+export const enum IterType {
+  NEXT = "NEXT",
+  RETURN = "RETURN",
+  THROW = "THROW",
+}
+
+export type IterMessage = {
+  id?: number
+  type: IterType
+  value: WireValue
 }
 
 export type Message =
