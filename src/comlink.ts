@@ -340,17 +340,17 @@ const generatorTransferHandler = {
     const generator: AsyncGenerator = {
       async next(x) {
         const [wireValue, transfer] = toWireValue(x);
-        const y = await requestNextMessage(port, { type: IterType.NEXT, value: wireValue }, transfer)
+        const y = await requestResponseMessage(port, { type: IterType.NEXT, value: wireValue }, transfer)
         return fromWireValue(y)
       },
       async return(x) {
         const [wireValue, transfer] = toWireValue(x);
-        const y = await requestNextMessage(port, { type: IterType.RETURN, value: wireValue }, transfer)
+        const y = await requestResponseMessage(port, { type: IterType.RETURN, value: wireValue }, transfer)
         return fromWireValue(y)
       },
       async throw(e) {
         const [wireValue, transfer] = toWireValue({ value: e, [throwMarker]: 0 });
-        const y = await requestNextMessage(port, { type: IterType.THROW, value: wireValue }, transfer)
+        const y = await requestResponseMessage(port, { type: IterType.THROW, value: wireValue }, transfer)
         return fromWireValue(y)
       },
       [Symbol.asyncIterator]() { return this },
@@ -760,31 +760,11 @@ function fromWireValue(value: WireValue): any {
 
 function requestResponseMessage(
   ep: Endpoint,
-  msg: Message,
+  msg: Message|IterMessage,
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
     const id = generateUUID();
-    msg.id = id;
-    ep.addEventListener("message", function l(ev) {
-      if (ev.data?.id !== id) {
-        return;
-      }
-      ep.removeEventListener("message", l);
-      resolve(ev.data);
-    });
-    ep.start?.();
-    ep.postMessage(msg, transfers);
-  });
-}
-
-function requestNextMessage(
-  ep: Endpoint & { nr: number },
-  msg: IterMessage,
-  transfers?: Transferable[]
-): Promise<WireValue> {
-  return new Promise((resolve) => {
-    const id = ++ep.nr;
     msg.id = id;
     ep.addEventListener("message", function l(ev) {
       if (ev.data?.id !== id) {
