@@ -53,15 +53,18 @@ type TupleRecordMarker = typeof tupleMarker|typeof recordMarker;
  */
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
 
+type Unmark<T> = T extends TupleMarked|RecordMarked
+  ? { [P in keyof T as Exclude<P, TupleRecordMarker>]: T[P] }
+  : T
 
 type AsyncIterify<T> = T extends MaybeAsyncGenerator<infer A, infer B, infer C>
-  ? AsyncGenerator<A, B, C>
+  ? AsyncGenerator<Unmark<ProxyOrClone<A>>, Unmark<ProxyOrClone<B>>, UnproxyOrClone<C>>
   : T;
 
 type Asyncify<T> = T extends TupleMarked|RecordMarked
   ? Promise<{ [P in keyof T as Exclude<P, TupleRecordMarker>]: AsyncIterify<T[P]> }>
   : T extends MaybeAsyncGenerator<infer A, infer B, infer C>
-    ? AsyncGenerator<A, B, C>
+    ? AsyncGenerator<Unmark<ProxyOrClone<A>>, Unmark<ProxyOrClone<B>>, UnproxyOrClone<C>>
     : Promisify<T>;
 
 /**
