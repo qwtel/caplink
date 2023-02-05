@@ -596,6 +596,19 @@ function unregisterProxy(proxy: object) {
   }
 }
 
+const forwardAsyncIter = (gen: Promise<AsyncGenerator>) => 
+  Object.defineProperty(gen, Symbol.asyncIterator, {
+    writable: true,
+    enumerable: false,
+    configurable: true,
+    value: () => ({
+      async next(x: any) { return (await gen).next(x) },
+      async return(x: any) { return (await gen).return(x) },
+      async throw(e: any) { return (await gen).throw(e) },
+      [Symbol.asyncIterator]() { return this },
+    }),
+  })
+
 function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
@@ -652,7 +665,7 @@ function createProxy<T>(
         return createProxy(ep, path.slice(0, -1));
       }
       const [argumentList, transferables] = processTuple(rawArgumentList);
-      return requestResponseMessage(
+      const ret = requestResponseMessage(
         ep,
         {
           type: MessageType.APPLY,
@@ -661,11 +674,14 @@ function createProxy<T>(
         },
         transferables
       ).then(fromWireValue);
+      // If user expects async iter, forward calls to return value once it has resolved
+      forwardAsyncIter(ret);
+      return ret;
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const [argumentList, transferables] = processTuple(rawArgumentList);
-      return requestResponseMessage(
+      const ret = requestResponseMessage(
         ep,
         {
           type: MessageType.CONSTRUCT,
@@ -674,6 +690,8 @@ function createProxy<T>(
         },
         transferables
       ).then(fromWireValue);
+      forwardAsyncIter(ret);
+      return ret;
     },
   });
   registerProxy(proxy, ep);
