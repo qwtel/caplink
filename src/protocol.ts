@@ -98,7 +98,7 @@ export const enum IterType {
 }
 
 export type IterMessage = {
-  id?: number
+  id?: MessageID
   type: IterType
   value: WireValue
 }

@@ -293,7 +293,7 @@ const promiseTransferHandler = {
   }
 } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
 
-async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: number) {
+async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: string) {
   let returnValue;
   try {
     returnValue = record(await getReturnValue())
@@ -350,23 +350,22 @@ const generatorTransferHandler = {
     return [port2, [port2]]
   },
 
-  deserialize: (port2) => {
-    const port = Object.assign(port2, { nr: 0 })
+  deserialize: (port) => {
     const generator: AsyncGenerator = {
       async next(x) {
         const [wireValue, transfer] = toWireValue(x);
-        const y = await requestResponseMessage(port, { type: IterType.NEXT, value: wireValue }, transfer)
-        return fromWireValue(y)
+        const y = await requestResponseMessage(port, { type: IterType.NEXT, value: wireValue }, transfer);
+        return fromWireValue(y);
       },
       async return(x) {
         const [wireValue, transfer] = toWireValue(x);
-        const y = await requestResponseMessage(port, { type: IterType.RETURN, value: wireValue }, transfer)
-        return fromWireValue(y)
+        const y = await requestResponseMessage(port, { type: IterType.RETURN, value: wireValue }, transfer);
+        return fromWireValue(y);
       },
       async throw(e) {
         const [wireValue, transfer] = toWireValue({ value: e, [throwMarker]: 0 });
-        const y = await requestResponseMessage(port, { type: IterType.THROW, value: wireValue }, transfer)
-        return fromWireValue(y)
+        const y = await requestResponseMessage(port, { type: IterType.THROW, value: wireValue }, transfer);
+        return fromWireValue(y);
       },
       [Symbol.asyncIterator]() { return this },
     };
@@ -454,7 +453,7 @@ export function expose(
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
-  ep.addEventListener("message", function callback(ev) {
+  ep.addEventListener("message", async function callback(ev) {
     if (!ev || !ev.data) {
       return;
     }
@@ -510,32 +509,34 @@ export function expose(
     } catch (value) {
       returnValue = { value, [throwMarker]: 0 };
     }
-    Promise.resolve(returnValue)
-      .catch((value) => {
-        return { value, [throwMarker]: 0 };
-      })
-      .then((returnValue) => {
-        const [wireValue, transferables] = toWireValue(returnValue);
-        wireValue.id = id;
-        ep.postMessage(wireValue, transferables);
-        if (type === MessageType.RELEASE) {
-          // detach and deactive after sending release response above.
-          ep.removeEventListener("message", callback);
-          closeEndPoint(ep);
-          if (finalizer in obj && typeof obj[finalizer] === "function") {
-            obj[finalizer]();
-          }
+    let safeReturnValue;
+    try {
+      safeReturnValue = await returnValue;
+    } catch (value) {
+      safeReturnValue = { value, [throwMarker]: 0 };
+    }
+    try {
+      const [wireValue, transferables] = toWireValue(safeReturnValue);
+      wireValue.id = id;
+      ep.postMessage(wireValue, transferables);
+      if (type === MessageType.RELEASE) {
+        // detach and deactive after sending release response above.
+        ep.removeEventListener("message", callback);
+        closeEndPoint(ep);
+        if (finalizer in obj && typeof obj[finalizer] === "function") {
+          obj[finalizer]();
         }
-      })
-      .catch((error) => {
-        // Send Serialization Error To Caller
-        const [wireValue, transferables] = toWireValue({
-          value: new TypeError("Unserializable return value"),
-          [throwMarker]: 0,
-        });
-        wireValue.id = id;
-        ep.postMessage(wireValue, transferables);
+      }
+    }
+    catch (error) {
+      // Send Serialization Error To Caller
+      const [wireValue, transferables] = toWireValue({
+        value: new TypeError("Unserializable return value"),
+        [throwMarker]: 0,
       });
+      wireValue.id = id;
+      ep.postMessage(wireValue, transferables);
+    }
   });
   ep.start?.();
 }
@@ -558,12 +559,11 @@ function throwIfProxyReleased(isReleased: boolean) {
   }
 }
 
-function releaseEndpoint(ep: Endpoint) {
-  return requestResponseMessage(ep, {
+async function releaseEndpoint(ep: Endpoint) {
+  await requestResponseMessage(ep, {
     type: MessageType.RELEASE,
-  }).then(() => {
-    closeEndPoint(ep);
-  });
+  })
+  closeEndPoint(ep);
 }
 
 const proxyCounter = new WeakMap<Endpoint, number>();
