@@ -43,6 +43,8 @@ export interface RecordMarked {
   [recordMarker]: true;
 }
 
+type TupleRecordMarker = typeof tupleMarker|typeof recordMarker;
+
 /**
  * Takes a type and wraps it in a Promise, if it not already is one.
  * This is to avoid `Promise<Promise<T>>`.
@@ -50,6 +52,17 @@ export interface RecordMarked {
  * This is the inverse of `Unpromisify<T>`.
  */
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
+
+
+type AsyncIterify<T> = T extends MaybeAsyncGenerator<infer A, infer B, infer C>
+  ? AsyncGenerator<A, B, C>
+  : T;
+
+type Asyncify<T> = T extends TupleMarked|RecordMarked
+  ? Promise<{ [P in keyof T as Exclude<P, TupleRecordMarker>]: AsyncIterify<T[P]> }>
+  : T extends MaybeAsyncGenerator<infer A, infer B, infer C>
+    ? AsyncGenerator<A, B, C>
+    : Promisify<T>;
 
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
@@ -61,7 +74,7 @@ type RemoteProperty<T> =
   // If the value is a method, comlink will proxy it automatically.
   // Objects are only proxied if they are marked to be proxied.
   // Otherwise, the property is converted to a Promise that resolves the cloned value.
-  T extends Function | ProxyMarked ? Remote<T> : Promisify<T>;
+  T extends Function | ProxyMarked ? Remote<T> : Asyncify<T>;
 
 /**
  * Takes the raw type of a property as a remote thread would see it through a proxy (e.g. when passed in as a function
@@ -133,7 +146,7 @@ export type Remote<T> =
     (T extends (...args: infer TArguments) => infer TReturn
       ? (
           ...args: { [I in keyof TArguments]: UnproxyOrClone<TArguments[I]> }
-        ) => Promisify<ProxyOrClone<Awaited<TReturn>>>
+        ) => Asyncify<ProxyOrClone<Awaited<TReturn>>>
       : unknown) &
     // Handle construct signature (if present)
     // The return of construct signatures is always proxied (whether marked or not)
@@ -143,7 +156,7 @@ export type Remote<T> =
             ...args: {
               [I in keyof TArguments]: UnproxyOrClone<TArguments[I]>;
             }
-          ): Promisify<Remote<TInstance>>;
+          ): Asyncify<Remote<TInstance>>;
         }
       : unknown) &
     // Include additional special comlink methods available on the proxy.
@@ -153,6 +166,8 @@ export type Remote<T> =
  * Expresses that a type can be either a sync or async.
  */
 type MaybePromise<T> = Promise<T> | T;
+type MaybeAsyncGenerator<T, TReturn, TNext> = Generator<T, TReturn, TNext>|AsyncGenerator<T, TReturn, TNext>;
+
 
 /**
  * Takes the raw type of a remote object, function or class as a remote thread would see it through a proxy (e.g. when
