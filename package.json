@@ -46,5 +46,8 @@
     "rollup": "3.10.1",
     "tslib": "2.4.1",
     "typescript": "4.9.4"
+  },
+  "dependencies": {
+    "@worker-tools/typed-event-target": "^1.0.0"
   }
 }
