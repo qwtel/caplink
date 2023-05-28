@@ -3,7 +3,7 @@
 A fork of [Comlink](https://github.com/GoogleChromeLabs/comlink) that adds missing support for generators and multiple return values.
 
 ## Tuples & Records
-By default, Comlink's transfer handlers only apply to properties and return values of functions. 
+By default, Comlink's transfer handlers only apply to arguments and return values of functions. 
 Comlink Plus relaxes this by providing `Comlink.tuple` and `Comlink.record` helpers that apply transfer handlers, including user-defined ones, to each immediate member, e.g.
 
 ```ts
@@ -24,8 +24,6 @@ worker.doSomething(new MyClass())
 // Fixed in comlink-plus:
 worker.doSomethingNew(Comlink.record({ prop: new MyClass() }))
 ```
-
-Note that this does not do deep traversal. Comlink remains a wrapper around `postMessage` and structured clone, not a full remote procedure call library.
 
 ## Generators
 Generator support works as you would expect, turning sync generators into async versions. 
@@ -69,7 +67,7 @@ for await (const x of gen2) {
 - Only (async) generators will be transferred, no unnecessary work is being done for e.g. arrays or other types that define `Symbol.iterator` but aren't expected to be async-ified
 - `yield`, `return` and `throw` values are passed through Comlink's wire protocol (custom transfer handler support!)
 - Can push values to the generator by calling `next` manually. These values are also passed through Comlink's wire protocol.
-- Updated TS types (best effort made)
+- Updated TS types (best effort basis)
 - Worker is notified when consumer generator is garbage collected
 
 ## Promises
