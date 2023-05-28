@@ -13,14 +13,16 @@ Comlink.expose({
   // Works in upstream:
   doSomething(foo: MyClass) { /* ... */ }
   // Not working in upstream:
-  doSomethingNew(options: { foo: MyClass }) { /* ... */ }
+  doSomethingNew(options: { prop: MyClass }) { /* ... */ }
 })
 
-// --- ^ worker v main
-worker.doSomething(new MyClass)
+```
+```ts
+// Main thread
+worker.doSomething(new MyClass())
 
 // Fixed in comlink-plus:
-worker.doSomethingNew(Comlink.record({ foo: new MyClass }))
+worker.doSomethingNew(Comlink.record({ prop: new MyClass() }))
 ```
 
 Note that this does not do deep traversal. Comlink remains a wrapper around `postMessage` and structured clone, not a full remote procedure call library.
@@ -46,8 +48,9 @@ Comlink.expose({
     return Comlink.tuple(['Hello', this.gen()])
   },
 });
-
-// --- ^ worker v main
+```
+```ts
+// Main thread
 for await (const x of worker.gen()) {
   console.log(x) // 1,2,3
 }
@@ -81,9 +84,10 @@ Comlink.expose({
     continueWork(x);
   },
 });
-
-// --- ^ worker v main
-await worker.doWork(timeout(100).then(() => "delayed"))
+```
+```ts
+// Main thread
+await worker.doWork(new Promise(r => setTimeout(r, 100)))
 ```
 
 
