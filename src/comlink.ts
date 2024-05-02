@@ -12,9 +12,9 @@ import {
   PostMessageWithOrigin,
   WireValue,
   WireValueType,
-  ReleaseMessage,
   IterMessage,
   IterType,
+  MessageID,
 } from "./protocol";
 export type { Endpoint };
 
@@ -296,7 +296,7 @@ const promiseTransferHandler = {
   }
 } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
 
-async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: string) {
+async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: MessageID) {
   let returnValue;
   try {
     returnValue = record(await getReturnValue())
@@ -588,15 +588,11 @@ const nullFinalizers = "FinalizationRegistry" in globalThis ?
 function registerProxy(proxy: object, ep: Endpoint) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
   proxyCounter.set(ep, newCount);
-  if (proxyFinalizers) {
-    proxyFinalizers.register(proxy, ep, proxy);
-  }
+  proxyFinalizers?.register(proxy, ep, proxy);
 }
 
 function unregisterProxy(proxy: object) {
-  if (proxyFinalizers) {
-    proxyFinalizers.unregister(proxy);
-  }
+  proxyFinalizers?.unregister(proxy);
 }
 
 const forwardAsyncIter = (gen: Promise<AsyncGenerator>) => 
@@ -815,7 +811,7 @@ function requestResponseMessage(
 }
 
 function generateUUID(): string {
-  return crypto.randomUUID?.() ?? new Array(4)
+  return globalThis.crypto?.randomUUID?.() ?? new Array(4)
     .fill(0)
     .map(() => Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16))
     .join("-");

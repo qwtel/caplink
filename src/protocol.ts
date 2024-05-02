@@ -43,7 +43,7 @@ export interface HandlerWireValue {
 
 export type WireValue = RawWireValue | HandlerWireValue;
 
-export type MessageID = string;
+export type MessageID = string|number;
 
 export const enum MessageType {
   GET = "GET",
