@@ -796,7 +796,7 @@ function requestResponseMessage(
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
-    const id = generateUUID();
+    const id = generateId();
     msg.id = id;
     ep.addEventListener("message", function l(ev) {
       if (ev.data?.id !== id) {
@@ -810,9 +810,6 @@ function requestResponseMessage(
   });
 }
 
-function generateUUID(): string {
-  return globalThis.crypto?.randomUUID?.() ?? new Array(4)
-    .fill(0)
-    .map(() => Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16))
-    .join("-");
+function generateId(): number|string {
+  return Math.random() * 2**32 >>> 0;
 }
