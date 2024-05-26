@@ -168,7 +168,7 @@ export type Remote<T> =
 /**
  * Expresses that a type can be either a sync or async.
  */
-type MaybePromise<T> = Promise<T> | T;
+type MaybePromise<T> = PromiseLike<T> | T;
 type MaybeAsyncGenerator<T, TReturn, TNext> = Generator<T, TReturn, TNext>|AsyncGenerator<T, TReturn, TNext>;
 
 
@@ -354,6 +354,7 @@ const generatorTransferHandler = {
   },
 
   deserialize: (port) => {
+    if (!endpointPendingListeners.has(port)) endpointPendingListeners.set(port, new Map());
     const generator: AsyncGenerator = {
       async next(x) {
         const [wireValue, transfer] = toWireValue(x);
@@ -384,6 +385,10 @@ interface ThrownValue {
 type SerializedThrownValue =
   | { isError: true; value: Error }
   | { isError: false; value: unknown };
+
+type PendingListenersMap = Map<MessageID, (value: MaybePromise<WireValue>) => void>;
+
+const endpointPendingListeners = new WeakMap<Endpoint, PendingListenersMap>;
 
 /**
  * Internal transfer handler to handle thrown exceptions.
@@ -553,6 +558,25 @@ function closeEndPoint(endpoint: Endpoint) {
 }
 
 export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
+  const pendingListeners: PendingListenersMap = new Map();
+  endpointPendingListeners.set(ep, pendingListeners);
+
+  // NOTE: There could be other types of messages flying around, so assuming it is one of ours simply by checking for `id` is a bit murky
+  // but probably preferable to checking the full schema...
+  ep.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
+    const { data } = ev;
+    if (!data?.id) {
+      return;
+    }
+    const resolve = pendingListeners.get(data.id);
+    if (!resolve) {
+      return;
+    }
+
+    pendingListeners.delete(data.id);
+    resolve(data);
+  });
+
   return createProxy<T>(ep, [], target) as any;
 }
 
@@ -621,6 +645,7 @@ function createProxy<T>(
         return () => {
           unregisterProxy(proxy);
           releaseEndpoint(ep);
+          endpointPendingListeners.get(ep)?.clear();
           isProxyReleased = true;
         };
       }
@@ -798,18 +823,12 @@ function requestResponseMessage(
   return new Promise((resolve) => {
     const id = generateId();
     msg.id = id;
-    ep.addEventListener("message", function l(ev) {
-      if (ev.data?.id !== id) {
-        return;
-      }
-      ep.removeEventListener("message", l);
-      resolve(ev.data);
-    });
+    endpointPendingListeners.get(ep)?.set(id, resolve);
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
 }
 
-function generateId(): number|string {
+function generateId(): MessageID {
   return Math.random() * 2**32 >>> 0;
 }
