@@ -254,19 +254,19 @@ const proxyTransferHandler = {
 } satisfies TransferHandler<object, MessagePort>;
 
 const tupleTransferHandler = {
-  canHandle: (val): val is any[] => Array.isArray(val) && (val as any)[tupleMarker],
+  canHandle: (val): val is any[] => Array.isArray(val) && (val as any[] & TupleMarked)[tupleMarker],
   serialize: (val) => processTuple(val),
   deserialize: (val) => val.map(fromWireValue)
 } satisfies TransferHandler<any[], WireValue[]>;
 
 const recordTransferHandler = {
-  canHandle: (val): val is Rec<any> => val != null && typeof val === 'object' && (val as any)[recordMarker],
+  canHandle: (val): val is Rec<any> => isObject(val) && (val as RecordMarked)[recordMarker],
   serialize: (val) => processRecord(val),
   deserialize: (val) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue(val[k]); return ret }
 } satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
 
 const promiseTransferHandler = {
-  canHandle: (val): val is PromiseLike<any> => val != null && typeof val === 'object' && 'then' in val,
+  canHandle: (val): val is PromiseLike<any> => isObject(val) && 'then' in val,
   serialize: (val) => {
     const { port1, port2 } = new MessageChannel();
     val.then(
@@ -320,7 +320,7 @@ async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePro
 
 const generatorTransferHandler = {
   canHandle: (val): val is Generator|AsyncGenerator => 
-    val != null && typeof val === 'object' && 
+    isObject(val) && 
     'next' in val && 
     'return' in val && 
     'throw' in val && 
