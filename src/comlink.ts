@@ -414,8 +414,7 @@ const throwTransferHandler: TransferHandler<
   ThrownValue,
   SerializedThrownValue
 > = {
-  canHandle: (value): value is ThrownValue =>
-    isObject(value) && throwMarker in value,
+  canHandle: (value): value is ThrownValue => isObject(value) && throwMarker in value,
   serialize({ value }) {
     let serialized: SerializedThrownValue;
     if (value instanceof Error) {
@@ -637,12 +636,12 @@ function unregisterProxy(proxy: object) {
   proxyFinalizers?.unregister(proxy);
 }
 
-/** @deprecated Should this use the regular finalization infra instead? */
+/** @deprecated Should this use Comlink's proxy release functionality instead? */
 function finalizeViaNullMessage(port: MessagePort) {
   port.postMessage(null)
   port.close();
 }
-/** @deprecated Should this use the regular finalization infra instead? */
+/** @deprecated Should this use Comlink's proxy release functionality instead? */
 const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
 
 const forwardAsyncIter = (gen: Promise<AsyncGenerator>) => 
