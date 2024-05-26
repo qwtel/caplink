@@ -22,7 +22,9 @@ export const proxyMarker = Symbol("Comlink.proxy");
 export const tupleMarker = Symbol("Comlink.tuple")
 export const recordMarker = Symbol("Comlink.record")
 export const createEndpoint = Symbol("Comlink.endpoint");
+/** @deprecated Use `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Comlink.releaseProxy");
+/** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const finalizer = Symbol("Comlink.finalizer");
 
 const throwMarker = Symbol("Comlink.thrown");
@@ -135,6 +137,8 @@ export type LocalObject<T> = { [P in keyof T]: LocalProperty<T[P]> };
  */
 export interface ProxyMethods {
   [createEndpoint]: () => Promise<MessagePort>;
+  [Symbol.asyncDispose]: () => Promise<void>;
+  /** @deprecated Use `Symbol.asyncDispose` instead */
   [releaseProxy]: () => Promise<void>;
 }
 
@@ -532,9 +536,15 @@ export function expose(
       wireValue.id = id;
       ep.postMessage(wireValue, transferables);
       if (type === MessageType.RELEASE) {
-        // detach and deactive after sending release response above.
+        // detach and deactivate after sending release response above.
         ep.removeEventListener("message", callback);
         closeEndpoint(ep);
+        if ('dispose' in Symbol && Symbol.dispose in obj) {
+          obj[Symbol.dispose]();
+        }
+        if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
+          await obj[Symbol.asyncDispose]();
+        }
         if (finalizer in obj && typeof obj[finalizer] === "function") {
           obj[finalizer]();
         }
@@ -597,21 +607,16 @@ async function releaseEndpoint(ep: Endpoint) {
   closeEndpoint(ep);
 }
 
-const proxyCounter = new WeakMap<Endpoint, number>();
-const proxyFinalizers = "FinalizationRegistry" in globalThis
-  ? new FinalizationRegistry((ep: Endpoint) => {
-    const newCount = (proxyCounter.get(ep) || 0) - 1;
-    proxyCounter.set(ep, newCount);
-    if (newCount === 0) {
-      releaseEndpoint(ep);
-    }
-  }) : undefined;
+async function finalizeEndpoint(ep: Endpoint) {
+  const newCount = (proxyCounter.get(ep) || 0) - 1;
+  proxyCounter.set(ep, newCount);
+  if (newCount === 0) {
+    await releaseEndpoint(ep);
+  }
+}
 
-const nullFinalizers = "FinalizationRegistry" in globalThis ? 
-  new FinalizationRegistry((port: MessagePort) => {
-    port.postMessage(null)
-    port.close();
-  }) : undefined;
+const proxyCounter = new WeakMap<Endpoint, number>();
+const proxyFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeEndpoint) : undefined;
 
 function registerProxy(proxy: object, ep: Endpoint) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
@@ -622,6 +627,14 @@ function registerProxy(proxy: object, ep: Endpoint) {
 function unregisterProxy(proxy: object) {
   proxyFinalizers?.unregister(proxy);
 }
+
+/** @deprecated Should this use the regular finalization infra instead? */
+function finalizeViaNullMessage(port: MessagePort) {
+  port.postMessage(null)
+  port.close();
+}
+/** @deprecated Should this use the regular finalization infra instead? */
+const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
 
 const forwardAsyncIter = (gen: Promise<AsyncGenerator>) => 
   Object.defineProperty(gen, Symbol.asyncIterator, {
@@ -645,7 +658,7 @@ function createProxy<T>(
   const proxy = new Proxy(target, {
     get(_target, prop) {
       throwIfProxyReleased(isProxyReleased);
-      if (prop === releaseProxy) {
+      if (prop === releaseProxy || ('asyncDispose' in Symbol && prop === Symbol.asyncDispose)) {
         return async () => {
           unregisterProxy(proxy);
           await releaseEndpoint(ep);
