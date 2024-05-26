@@ -135,7 +135,7 @@ export type LocalObject<T> = { [P in keyof T]: LocalProperty<T[P]> };
  */
 export interface ProxyMethods {
   [createEndpoint]: () => Promise<MessagePort>;
-  [releaseProxy]: () => void;
+  [releaseProxy]: () => Promise<void>;
 }
 
 /**
@@ -646,9 +646,9 @@ function createProxy<T>(
     get(_target, prop) {
       throwIfProxyReleased(isProxyReleased);
       if (prop === releaseProxy) {
-        return () => {
+        return async () => {
           unregisterProxy(proxy);
-          releaseEndpoint(ep);
+          await releaseEndpoint(ep);
           isProxyReleased = true;
         };
       }
