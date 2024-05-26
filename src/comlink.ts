@@ -311,7 +311,7 @@ async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePro
       const [wireValue, transferables] = toWireValue(returnValue);
       wireValue.id = id;
       port.postMessage(wireValue, transferables);
-  } catch (error) {
+  } catch {
     // Send Serialization Error To Caller
     const [wireValue, transferables] = toWireValue({
       value: new TypeError("Unserializable return value"),
@@ -550,7 +550,7 @@ export function expose(
         }
       }
     }
-    catch (error) {
+    catch {
       // Send Serialization Error To Caller
       const [wireValue, transferables] = toWireValue({
         value: new TypeError("Unserializable return value"),
