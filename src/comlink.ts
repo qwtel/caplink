@@ -399,10 +399,9 @@ type SerializedThrownValue =
   | { isError: false; value: unknown };
 
 type PendingListenersMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
-type MessageHandler = (ev: MessageEvent<WireValue|null>) => void
 type EndpointMeta = { 
   pendingListeners: PendingListenersMap, 
-  messageHandler: MessageHandler;
+  messageHandler: (ev: MessageEvent<WireValue|null>) => void;
 };
 
 const endpointMeta = new WeakMap<Endpoint, EndpointMeta>;
@@ -533,39 +532,40 @@ export function expose(
     } catch (value) {
       returnValue = { value, [throwMarker]: 0 };
     }
-    let safeReturnValue;
     try {
-      safeReturnValue = await returnValue;
+      returnValue = await returnValue;
     } catch (value) {
-      safeReturnValue = { value, [throwMarker]: 0 };
+      returnValue = { value, [throwMarker]: 0 };
     }
-    try {
-      const [wireValue, transferables] = toWireValue(safeReturnValue);
-      wireValue.id = id;
-      ep.postMessage(wireValue, transferables);
-      if (type === MessageType.RELEASE) {
-        // detach and deactivate after sending release response above.
-        ep.removeEventListener("message", callback);
-        closeEndpoint(ep);
-        if ('dispose' in Symbol && Symbol.dispose in obj) {
-          obj[Symbol.dispose]();
-        }
-        if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
-          await obj[Symbol.asyncDispose]();
-        }
-        if (finalizer in obj && typeof obj[finalizer] === "function") {
-          obj[finalizer]();
+    {
+      try {
+        const [wireValue, transferables] = toWireValue(returnValue);
+        wireValue.id = id;
+        ep.postMessage(wireValue, transferables);
+        if (type === MessageType.RELEASE) {
+          // detach and deactivate after sending release response above.
+          ep.removeEventListener("message", callback);
+          closeEndpoint(ep);
+          if ('dispose' in Symbol && Symbol.dispose in obj) {
+            obj[Symbol.dispose]();
+          }
+          if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
+            await obj[Symbol.asyncDispose]();
+          }
+          if (finalizer in obj && typeof obj[finalizer] === "function") {
+            obj[finalizer]();
+          }
         }
       }
-    }
-    catch {
-      // Send Serialization Error To Caller
-      const [wireValue, transferables] = toWireValue({
-        value: new TypeError("Unserializable return value"),
-        [throwMarker]: 0,
-      });
-      wireValue.id = id;
-      ep.postMessage(wireValue, transferables);
+      catch {
+        // Send Serialization Error To Caller
+        const [wireValue, transferables] = toWireValue({
+          value: new TypeError("Unserializable return value"),
+          [throwMarker]: 0,
+        });
+        wireValue.id = id;
+        ep.postMessage(wireValue, transferables);
+      }
     }
   });
   ep.start?.();
@@ -722,7 +722,8 @@ function createProxy<T>(
         },
         transferables
       ).then(fromWireValue);
-      // If user expects async iter, forward calls to return value once it has resolved
+      // HACK: If caller expects async iter, forward calls to return value once it has resolved.
+      //       Should this be a comlink proxy instead? Shouldn't we know from the wire value what type it is?
       forwardAsyncIter(ret);
       return ret;
     },
@@ -738,6 +739,7 @@ function createProxy<T>(
         },
         transferables
       ).then(fromWireValue);
+      // FIXME: is this necessary?
       forwardAsyncIter(ret);
       return ret;
     },
