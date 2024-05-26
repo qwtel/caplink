@@ -338,12 +338,20 @@ const generatorTransferHandler = {
         const { type, id, value } = ev.data;
         switch (type) {
           case IterType.NEXT: 
-            return postIterMessage(port1, () => gen.next(fromWireValue(value)), id);
+            postIterMessage(port1, () => gen.next(fromWireValue(value)), id);
+            break;
           case IterType.RETURN:
-            return postIterMessage(port1, () => gen.return(fromWireValue(value)), id);
+            postIterMessage(port1, () => gen.return(fromWireValue(value)), id);
+            port1.removeEventListener("message", callback);
+            port1.close();
+            break;
           case IterType.THROW:
-            try { fromWireValue(value) } catch (err) {
+            try {
+              fromWireValue(value);
+            } catch (err) {
               postIterMessage(port1, () => gen.throw(err), id);
+              port1.removeEventListener("message", callback);
+              port1.close();
             }
         }
       } else {
@@ -352,7 +360,6 @@ const generatorTransferHandler = {
       }
     });
 
-    nullFinalizers?.register(gen, port1);
     port1.start()
     return [port2, [port2]]
   },
@@ -376,6 +383,8 @@ const generatorTransferHandler = {
       },
       [Symbol.asyncIterator]() { return this },
     };
+
+    nullFinalizers?.register(generator, port);
 
     return generator;
   }
