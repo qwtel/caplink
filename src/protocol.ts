@@ -109,4 +109,5 @@ export type Message =
   | ApplyMessage
   | ConstructMessage
   | EndpointMessage
-  | ReleaseMessage;
+  | ReleaseMessage
+  | IterMessage;
