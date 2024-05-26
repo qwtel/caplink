@@ -437,12 +437,12 @@ export const transferHandlers = new Map<
   string,
   TransferHandler<unknown, unknown>
 >([
+  ["proxy", proxyTransferHandler],
+  ["throw", throwTransferHandler],
   ["tuple", tupleTransferHandler],
   ["record", recordTransferHandler],
   ["promise", promiseTransferHandler],
   ["generator", generatorTransferHandler],
-  ["proxy", proxyTransferHandler],
-  ["throw", throwTransferHandler],
 ]);
 
 function isAllowedOrigin(
@@ -557,36 +557,21 @@ function isMessagePort(endpoint: Endpoint): endpoint is MessagePort {
   return endpoint instanceof MessagePort || endpoint.constructor.name === "MessagePort";
 }
 
-function closeProxyEndpoint(endpoint: Endpoint) {
-  if (endpointMeta.has(endpoint)) {
-    const { pendingListeners, messageHandler } = endpointMeta.get(endpoint)!;
-    endpointMeta.delete(endpoint);
-    pendingListeners.clear();
-    endpoint.removeEventListener("message", messageHandler);
-  }
-  closeEndpoint(endpoint);
-}
-
 function closeEndpoint(endpoint: Endpoint) {
   if (isMessagePort(endpoint)) endpoint.close();
 }
 
-const makeMessageHandler = (pendingListeners: PendingListenersMap) => {
-  // NOTE: There could be other types of messages flying around, so assuming it is one of ours simply by checking for `id` is a bit murky
-  // but probably preferable to checking the full schema...
-  return (ev: MessageEvent<WireValue|null>) => {
-    const { data } = ev;
-    if (!data?.id) {
-      return;
-    }
-    const resolve = pendingListeners.get(data.id);
-    if (!resolve) {
-      return;
-    }
-
-    pendingListeners.delete(data.id);
-    resolve(data);
+const makeMessageHandler = (pendingListeners: PendingListenersMap) => (ev: MessageEvent<WireValue|null>) => {
+  const { data } = ev;
+  if (!data?.id) {
+    return;
   }
+  const resolve = pendingListeners.get(data.id);
+  if (!resolve) {
+    return;
+  }
+  pendingListeners.delete(data.id);
+  resolve(data);
 }
 
 export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
@@ -602,8 +587,14 @@ function throwIfProxyReleased(isReleased: boolean) {
 async function releaseEndpoint(ep: Endpoint) {
   await requestResponseMessage(ep, {
     type: MessageType.RELEASE,
-  })
-  closeProxyEndpoint(ep);
+  });
+  if (endpointMeta.has(ep)) {
+    const { pendingListeners, messageHandler } = endpointMeta.get(ep)!;
+    endpointMeta.delete(ep);
+    pendingListeners.clear();
+    ep.removeEventListener("message", messageHandler);
+  }
+  closeEndpoint(ep);
 }
 
 const proxyCounter = new WeakMap<Endpoint, number>();
@@ -787,8 +778,7 @@ export function windowEndpoint(
   targetOrigin = "*"
 ): Endpoint {
   return {
-    postMessage: (msg: any, transferables: Transferable[]) =>
-      w.postMessage(msg, targetOrigin, transferables),
+    postMessage: (msg: any, transferables: Transferable[]) => w.postMessage(msg, targetOrigin, transferables),
     addEventListener: context.addEventListener.bind(context),
     removeEventListener: context.removeEventListener.bind(context),
   };
@@ -832,10 +822,10 @@ function requestResponseMessage(
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
-    let pendingListeners = endpointMeta.get(ep)?.pendingListeners
+    let pendingListeners = endpointMeta.get(ep)?.pendingListeners;
     if (!pendingListeners) {
-      pendingListeners = new Map()
-      const messageHandler = makeMessageHandler(pendingListeners)
+      pendingListeners = new Map();
+      const messageHandler = makeMessageHandler(pendingListeners);
       endpointMeta.set(ep, { pendingListeners, messageHandler });
       ep.addEventListener("message", messageHandler);
     }
