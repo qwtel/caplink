@@ -354,7 +354,6 @@ const generatorTransferHandler = {
   },
 
   deserialize: (port) => {
-    if (!endpointPendingListeners.has(port)) endpointPendingListeners.set(port, new Map());
     const generator: AsyncGenerator = {
       async next(x) {
         const [wireValue, transfer] = toWireValue(x);
@@ -557,13 +556,10 @@ function closeEndPoint(endpoint: Endpoint) {
   if (isMessagePort(endpoint)) endpoint.close();
 }
 
-export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
-  const pendingListeners: PendingListenersMap = new Map();
-  endpointPendingListeners.set(ep, pendingListeners);
-
+const makeMessageHandler = (pendingListeners: PendingListenersMap) => {
   // NOTE: There could be other types of messages flying around, so assuming it is one of ours simply by checking for `id` is a bit murky
   // but probably preferable to checking the full schema...
-  ep.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
+  return (ev: MessageEvent<WireValue|null>) => {
     const { data } = ev;
     if (!data?.id) {
       return;
@@ -575,8 +571,10 @@ export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
 
     pendingListeners.delete(data.id);
     resolve(data);
-  });
+  }
+}
 
+export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
   return createProxy<T>(ep, [], target) as any;
 }
 
@@ -821,9 +819,15 @@ function requestResponseMessage(
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
+    let pendingListeners = endpointPendingListeners.get(ep)
+    if (!pendingListeners) {
+      pendingListeners = new Map()
+      endpointPendingListeners.set(ep, pendingListeners);
+      ep.addEventListener("message", makeMessageHandler(pendingListeners));
+    }
     const id = generateId();
     msg.id = id;
-    endpointPendingListeners.get(ep)?.set(id, resolve);
+    pendingListeners.set(id, resolve);
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
