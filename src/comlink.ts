@@ -14,7 +14,7 @@ import {
   WireValueType,
   IterMessage,
   IterType,
-  MessageID,
+  MessageId,
 } from "./protocol";
 export type { Endpoint };
 
@@ -296,7 +296,7 @@ const promiseTransferHandler = {
   }
 } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
 
-async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: MessageID) {
+async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: MessageId) {
   let returnValue;
   try {
     returnValue = record(await getReturnValue())
@@ -386,7 +386,7 @@ type SerializedThrownValue =
   | { isError: true; value: Error }
   | { isError: false; value: unknown };
 
-type PendingListenersMap = Map<MessageID, (value: MaybePromise<WireValue>) => void>;
+type PendingListenersMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
 
 const endpointPendingListeners = new WeakMap<Endpoint, PendingListenersMap>;
 
@@ -829,6 +829,6 @@ function requestResponseMessage(
   });
 }
 
-function generateId(): MessageID {
+function generateId(): MessageId {
   return Math.random() * 2**32 >>> 0;
 }

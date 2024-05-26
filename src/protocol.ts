@@ -43,7 +43,7 @@ export interface HandlerWireValue {
 
 export type WireValue = RawWireValue | HandlerWireValue;
 
-export type MessageID = string|number;
+export type MessageId = string|number;
 
 export const enum MessageType {
   GET = "GET",
@@ -55,39 +55,39 @@ export const enum MessageType {
 }
 
 export interface GetMessage {
-  id?: MessageID;
+  id?: MessageId;
   type: MessageType.GET;
   path: string[];
 }
 
 export interface SetMessage {
-  id?: MessageID;
+  id?: MessageId;
   type: MessageType.SET;
   path: string[];
   value: WireValue;
 }
 
 export interface ApplyMessage {
-  id?: MessageID;
+  id?: MessageId;
   type: MessageType.APPLY;
   path: string[];
   argumentList: WireValue[];
 }
 
 export interface ConstructMessage {
-  id?: MessageID;
+  id?: MessageId;
   type: MessageType.CONSTRUCT;
   path: string[];
   argumentList: WireValue[];
 }
 
 export interface EndpointMessage {
-  id?: MessageID;
+  id?: MessageId;
   type: MessageType.ENDPOINT;
 }
 
 export interface ReleaseMessage {
-  id?: MessageID;
+  id?: MessageId;
   type: MessageType.RELEASE;
 }
 
@@ -98,7 +98,7 @@ export const enum IterType {
 }
 
 export type IterMessage = {
-  id?: MessageID
+  id?: MessageId
   type: IterType
   value: WireValue
 }
