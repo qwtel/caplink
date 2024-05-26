@@ -386,8 +386,13 @@ type SerializedThrownValue =
   | { isError: false; value: unknown };
 
 type PendingListenersMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
+type MessageHandler = (ev: MessageEvent<WireValue|null>) => void
+type EndpointMeta = { 
+  pendingListeners: PendingListenersMap, 
+  messageHandler: MessageHandler;
+};
 
-const endpointPendingListeners = new WeakMap<Endpoint, PendingListenersMap>;
+const endpointMeta = new WeakMap<Endpoint, EndpointMeta>;
 
 /**
  * Internal transfer handler to handle thrown exceptions.
@@ -529,7 +534,7 @@ export function expose(
       if (type === MessageType.RELEASE) {
         // detach and deactive after sending release response above.
         ep.removeEventListener("message", callback);
-        closeEndPoint(ep);
+        closeEndpoint(ep);
         if (finalizer in obj && typeof obj[finalizer] === "function") {
           obj[finalizer]();
         }
@@ -552,7 +557,17 @@ function isMessagePort(endpoint: Endpoint): endpoint is MessagePort {
   return endpoint instanceof MessagePort || endpoint.constructor.name === "MessagePort";
 }
 
-function closeEndPoint(endpoint: Endpoint) {
+function closeProxyEndpoint(endpoint: Endpoint) {
+  if (endpointMeta.has(endpoint)) {
+    const { pendingListeners, messageHandler } = endpointMeta.get(endpoint)!;
+    endpointMeta.delete(endpoint);
+    pendingListeners.clear();
+    endpoint.removeEventListener("message", messageHandler);
+  }
+  closeEndpoint(endpoint);
+}
+
+function closeEndpoint(endpoint: Endpoint) {
   if (isMessagePort(endpoint)) endpoint.close();
 }
 
@@ -588,7 +603,7 @@ async function releaseEndpoint(ep: Endpoint) {
   await requestResponseMessage(ep, {
     type: MessageType.RELEASE,
   })
-  closeEndPoint(ep);
+  closeProxyEndpoint(ep);
 }
 
 const proxyCounter = new WeakMap<Endpoint, number>();
@@ -643,7 +658,6 @@ function createProxy<T>(
         return () => {
           unregisterProxy(proxy);
           releaseEndpoint(ep);
-          endpointPendingListeners.get(ep)?.clear();
           isProxyReleased = true;
         };
       }
@@ -781,7 +795,6 @@ export function windowEndpoint(
 }
 
 function toWireValue(value: any): TransferableTuple<WireValue> {
-  // console.log(value != null && typeof value === "object" && "then" in value)
   for (const [name, handler] of transferHandlers) {
     if (handler.canHandle(value)) {
       const [serializedValue, transferables] = handler.serialize(value);
@@ -819,11 +832,12 @@ function requestResponseMessage(
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
-    let pendingListeners = endpointPendingListeners.get(ep)
+    let pendingListeners = endpointMeta.get(ep)?.pendingListeners
     if (!pendingListeners) {
       pendingListeners = new Map()
-      endpointPendingListeners.set(ep, pendingListeners);
-      ep.addEventListener("message", makeMessageHandler(pendingListeners));
+      const messageHandler = makeMessageHandler(pendingListeners)
+      endpointMeta.set(ep, { pendingListeners, messageHandler });
+      ep.addEventListener("message", messageHandler);
     }
     const id = generateId();
     msg.id = id;
