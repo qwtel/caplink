@@ -47,6 +47,7 @@ export interface RecordMarked {
   [recordMarker]: true;
 }
 
+type TupleOrRecordMarked = TupleMarked|RecordMarked;
 type TupleOrRecordMarker = typeof tupleMarker|typeof recordMarker;
 
 /**
@@ -57,17 +58,21 @@ type TupleOrRecordMarker = typeof tupleMarker|typeof recordMarker;
  */
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
 
-type Unmark<T> = T extends TupleMarked|RecordMarked
+type Unmark<T> = T extends TupleOrRecordMarked
   ? { [P in keyof T as Exclude<P, TupleOrRecordMarker>]: T[P] }
   : T
 
-type AsyncifyHelper<T> = T extends MaybeAsyncGenerator<infer U, infer UReturn, infer UNext>
-  ? Remote<AsyncGenerator<Unmark<ProxyOrClone<U>>, Unmark<ProxyOrClone<UReturn>>, UnproxyOrClone<UNext>>>
+type AsyncifyValue<T> = T extends MaybeAsyncGenerator
+  ? Remote<T>
   : Promisify<T>;
 
-type Asyncify<T> = T extends TupleMarked|RecordMarked
-  ? Promise<{ [P in keyof T as Exclude<P, TupleOrRecordMarker>]: AsyncifyHelper<T[P]> }>
-  : AsyncifyHelper<T>;
+type AsyncifyTupleOrRecordValue<T> = T extends MaybeAsyncGenerator
+  ? Remote<T>
+  : T;
+
+type Asyncify<T> = T extends TupleOrRecordMarked
+  ? Promise<{ [P in keyof T as Exclude<P, TupleOrRecordMarker>]: AsyncifyTupleOrRecordValue<T[P]> }>
+  : AsyncifyValue<T>;
 
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
@@ -97,7 +102,7 @@ type LocalProperty<T> = T extends Function | ProxyMarked
 /**
  * Proxies `T` if it is a `ProxyMarked`, clones it otherwise (as handled by structured cloning and transfer handlers).
  */
-export type ProxyOrClone<T> = T extends TupleMarked|RecordMarked 
+export type ProxyOrClone<T> = T extends TupleOrRecordMarked 
   ? { [P in keyof T]: ProxyOrClone<T[P]> }
   : T extends ProxyMarked 
     ? Remote<T> 
@@ -105,11 +110,13 @@ export type ProxyOrClone<T> = T extends TupleMarked|RecordMarked
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
-export type UnproxyOrClone<T> = T extends RemoteObject<TupleMarked|RecordMarked>
+export type UnproxyOrClone<T> = T extends RemoteObject<TupleOrRecordMarked>
   ? { [P in keyof T ]: UnproxyOrClone<T[P]> }
   : T extends RemoteObject<ProxyMarked>
     ? Local<T>
     : T;
+
+type ReplaceSymbolIterator<K> = K extends typeof Symbol.iterator ? typeof Symbol.asyncIterator : K;
 
 /**
  * Takes the raw type of a remote object in the other thread and returns the type as it is visible to the local thread
@@ -119,7 +126,7 @@ export type UnproxyOrClone<T> = T extends RemoteObject<TupleMarked|RecordMarked>
  *
  * @template T The raw type of a remote object as seen in the other thread.
  */
-export type RemoteObject<T> = { [P in keyof T]: RemoteProperty<T[P]> };
+export type RemoteObject<T> = { [P in keyof T as ReplaceSymbolIterator<P>]: RemoteProperty<T[P]> };
 /**
  * Takes the type of an object as a remote thread would see it through a proxy (e.g. when passed in as a function
  * argument) and returns the type that the local thread has to supply.
@@ -769,10 +776,8 @@ function requestResponseMessage(
   });
 }
 
-/** 
- * A custom promise that traps calls to async generator functions and applies them once the promise is resolved.
- * FIXME: Should this be a proxy instead that does this for all methods, other than `then`, `catch`, and `finally`?
- */
+/** A custom promise that traps calls to async generator functions and applies them once the promise is resolved. */
+// FIXME: Should this be a proxy instead that does this for all methods, other than `then`, `catch`, and `finally`?
 class ForwardAsyncGeneratorPromise<T> implements Promise<T> {
   constructor(private promise: Promise<T>) { }
   then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined): Promise<TResult1 | TResult2> {
