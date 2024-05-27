@@ -43,7 +43,7 @@ export interface RecordMarked {
   [recordMarker]: true;
 }
 
-type TupleRecordMarker = typeof tupleMarker|typeof recordMarker;
+type TupleOrRecordMarker = typeof tupleMarker|typeof recordMarker;
 
 /**
  * Takes a type and wraps it in a Promise, if it not already is one.
@@ -54,18 +54,16 @@ type TupleRecordMarker = typeof tupleMarker|typeof recordMarker;
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
 
 type Unmark<T> = T extends TupleMarked|RecordMarked
-  ? { [P in keyof T as Exclude<P, TupleRecordMarker>]: T[P] }
+  ? { [P in keyof T as Exclude<P, TupleOrRecordMarker>]: T[P] }
   : T
 
-type AsyncIterify<T> = T extends MaybeAsyncGenerator<infer A, infer B, infer C>
-  ? AsyncGenerator<Unmark<ProxyOrClone<A>>, Unmark<ProxyOrClone<B>>, UnproxyOrClone<C>>
-  : T;
+type AsyncifyHelper<T> = T extends MaybeAsyncGenerator<infer U, infer UReturn, infer UNext>
+  ? Remote<AsyncGenerator<Unmark<ProxyOrClone<U>>, Unmark<ProxyOrClone<UReturn>>, UnproxyOrClone<UNext>>>
+  : Promisify<T>;
 
 type Asyncify<T> = T extends TupleMarked|RecordMarked
-  ? Promise<{ [P in keyof T as Exclude<P, TupleRecordMarker>]: AsyncIterify<T[P]> }>
-  : T extends MaybeAsyncGenerator<infer A, infer B, infer C>
-    ? AsyncGenerator<Unmark<ProxyOrClone<A>>, Unmark<ProxyOrClone<B>>, UnproxyOrClone<C>>
-    : Promisify<T>;
+  ? Promise<{ [P in keyof T as Exclude<P, TupleOrRecordMarker>]: AsyncifyHelper<T[P]> }>
+  : AsyncifyHelper<T>;
 
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
@@ -169,6 +167,7 @@ export type Remote<T> =
 
 /** Expresses that a type can be either a sync or async. */
 type MaybePromise<T> = PromiseLike<T> | T;
+
 /** Expresses that a type can be either an generator or async generator. */
 type MaybeAsyncGenerator<T = unknown, TReturn = any, TNext = unknown> = AsyncGenerator<T, TReturn, TNext> | Generator<T, TReturn, TNext>;
 
