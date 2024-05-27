@@ -402,6 +402,24 @@ function isAllowedOrigin(
   return false;
 }
 
+/** Restores well-known symbols from their stringified form */
+function symbolAwareGet(obj: any, prop: string) {
+  if (prop.startsWith("Symbol(") && prop.endsWith(")")) {
+    if (prop.startsWith("Symbol(Symbol.")) {
+      // Iterator needs special treatment because sync version is turned into async version when exposed from a endpoint
+      if (prop === "Symbol(Symbol.asyncIterator)") {
+        return Symbol.asyncIterator in obj ? obj[Symbol.asyncIterator] : obj[Symbol.iterator];
+      }
+      const knownSymbol = prop.slice(14, -1) as keyof typeof Symbol;
+      return obj[knownSymbol];
+    }
+    // In case the symbol was created with `Symbol.for` we can recreate it.
+    const sym = prop.slice(7, -1)
+    return obj[Symbol.for(sym)];
+  }
+  return obj[prop];
+}
+
 export function expose(
   obj: any,
   ep: Endpoint = globalThis as any,
@@ -420,8 +438,8 @@ export function expose(
     const argumentList = (ev.data.argumentList as any[] || []).map(fromWireValue);
     let returnValue;
     try {
-      const parent = path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
-      const rawValue = path.reduce((obj, prop) => obj[prop], obj);
+      const parent = path.slice(0, -1).reduce(symbolAwareGet, obj);
+      const rawValue = path.reduce(symbolAwareGet, obj);
       switch (type) {
         case MessageType.GET:
           {
@@ -430,6 +448,7 @@ export function expose(
           break;
         case MessageType.SET:
           {
+            // FIXME: symbol aware set needed?!
             parent[path.slice(-1)[0]] = fromWireValue(ev.data.value);
             returnValue = true;
           }
@@ -602,12 +621,6 @@ function createProxy<T>(
           path: path.map((p) => p.toString()),
         });
         return r.then.bind(r);
-      }
-      if (prop === Symbol.asyncIterator) {
-        if (path.length === 0) {
-          return (() => proxy) as any;
-        }
-        // TODO: what do here?
       }
       return createProxy(ep, [...path, prop]);
     },
