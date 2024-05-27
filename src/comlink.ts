@@ -12,8 +12,6 @@ import {
   PostMessageWithOrigin,
   WireValue,
   WireValueType,
-  IterMessage,
-  IterType,
   MessageId,
 } from "./protocol";
 export type { Endpoint };
@@ -169,12 +167,10 @@ export type Remote<T> =
     // Include additional special comlink methods available on the proxy.
     ProxyMethods;
 
-/**
- * Expresses that a type can be either a sync or async.
- */
+/** Expresses that a type can be either a sync or async. */
 type MaybePromise<T> = PromiseLike<T> | T;
-type MaybeAsyncGenerator<T, TReturn, TNext> = Generator<T, TReturn, TNext>|AsyncGenerator<T, TReturn, TNext>;
-
+/** Expresses that a type can be either an generator or async generator. */
+type MaybeAsyncGenerator<T = unknown, TReturn = any, TNext = unknown> = AsyncGenerator<T, TReturn, TNext> | Generator<T, TReturn, TNext>;
 
 /**
  * Takes the raw type of a remote object, function or class as a remote thread would see it through a proxy (e.g. when
@@ -300,95 +296,20 @@ const promiseTransferHandler = {
   }
 } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
 
-async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: MessageId) {
-  let returnValue;
-  try {
-    returnValue = record(await getReturnValue())
-  } catch (value) {
-    returnValue = { value, [throwMarker]: 0 };
-  }
-  try {
-      const [wireValue, transferables] = toWireValue(returnValue);
-      wireValue.id = id;
-      port.postMessage(wireValue, transferables);
-  } catch {
-    // Send Serialization Error To Caller
-    const [wireValue, transferables] = toWireValue({
-      value: new TypeError("Unserializable return value"),
-      [throwMarker]: 0,
-    });
-    wireValue.id = id;
-    port.postMessage(wireValue, transferables);
-  };
-}
-
 const generatorTransferHandler = {
-  canHandle: (val): val is Generator|AsyncGenerator => 
-    isObject(val) && 
-    'next' in val && 
-    'return' in val && 
-    'throw' in val && 
+  canHandle: (val): val is MaybeAsyncGenerator =>
+    isObject(val) &&
+    'next' in val &&
     (Symbol.asyncIterator in val || Symbol.iterator in val),
 
-  serialize: (gen) => {
-    const { port1, port2 } = new MessageChannel();
-
-    port1.addEventListener("message", async function callback(ev: MessageEvent<IterMessage|null>) {
-      if (ev.data != null) {
-        const { type, id, value } = ev.data;
-        switch (type) {
-          case IterType.NEXT: 
-            postIterMessage(port1, () => gen.next(fromWireValue(value)), id);
-            break;
-          case IterType.RETURN:
-            postIterMessage(port1, () => gen.return(fromWireValue(value)), id);
-            port1.removeEventListener("message", callback);
-            port1.close();
-            break;
-          case IterType.THROW:
-            try {
-              fromWireValue(value);
-            } catch (err) {
-              postIterMessage(port1, () => gen.throw(err), id);
-              port1.removeEventListener("message", callback);
-              port1.close();
-            }
-        }
-      } else {
-        port1.removeEventListener("message", callback);
-        port1.close();
-      }
-    });
-
-    port1.start()
-    return [port2, [port2]]
+  serialize(gen) {
+    return proxyTransferHandler.serialize(proxy(gen));
   },
 
-  deserialize: (port) => {
-    const generator: AsyncGenerator = {
-      async next(x) {
-        const [wireValue, transfer] = toWireValue(x);
-        const y = await requestResponseMessage(port, { type: IterType.NEXT, value: wireValue }, transfer);
-        return fromWireValue(y);
-      },
-      async return(x) {
-        const [wireValue, transfer] = toWireValue(x);
-        const y = await requestResponseMessage(port, { type: IterType.RETURN, value: wireValue }, transfer);
-        return fromWireValue(y);
-      },
-      async throw(e) {
-        const [wireValue, transfer] = toWireValue({ value: e, [throwMarker]: 0 });
-        const y = await requestResponseMessage(port, { type: IterType.THROW, value: wireValue }, transfer);
-        return fromWireValue(y);
-      },
-      [Symbol.asyncIterator]() { return this },
-    };
-
-    nullFinalizers?.register(generator, port);
-
-    return generator;
+  deserialize(port) {
+    return proxyTransferHandler.deserialize(port) as Remote<AsyncGenerator>
   }
-} satisfies TransferHandler<Generator|AsyncGenerator, MessagePort>;
+} satisfies TransferHandler<MaybeAsyncGenerator, MessagePort>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -399,8 +320,8 @@ type SerializedThrownValue =
   | { isError: false; value: unknown };
 
 type PendingListenersMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
-type EndpointMeta = { 
-  pendingListeners: PendingListenersMap, 
+type EndpointMeta = {
+  pendingListeners: PendingListenersMap,
   messageHandler: (ev: MessageEvent<WireValue|null>) => void;
 };
 
@@ -524,6 +445,17 @@ export function expose(
         case MessageType.RELEASE:
           {
             returnValue = undefined;
+
+            // Run finalizers before sending message so caller can be sure that resources are freed up
+            if ('dispose' in Symbol && Symbol.dispose in obj) {
+              obj[Symbol.dispose]();
+            }
+            if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
+              await obj[Symbol.asyncDispose]();
+            }
+            if (finalizer in obj && typeof obj[finalizer] === "function") {
+              obj[finalizer]();
+            }
           }
           break;
         default:
@@ -546,15 +478,6 @@ export function expose(
           // detach and deactivate after sending release response above.
           ep.removeEventListener("message", callback);
           closeEndpoint(ep);
-          if ('dispose' in Symbol && Symbol.dispose in obj) {
-            obj[Symbol.dispose]();
-          }
-          if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
-            await obj[Symbol.asyncDispose]();
-          }
-          if (finalizer in obj && typeof obj[finalizer] === "function") {
-            obj[finalizer]();
-          }
         }
       }
       catch {
@@ -644,19 +567,6 @@ function finalizeViaNullMessage(port: MessagePort) {
 /** @deprecated Should this use Comlink's proxy release functionality instead? */
 const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
 
-const forwardAsyncIter = (gen: Promise<AsyncGenerator>) => 
-  Object.defineProperty(gen, Symbol.asyncIterator, {
-    writable: true,
-    enumerable: false,
-    configurable: true,
-    value: () => ({
-      async next(x: any) { return (await gen).next(x) },
-      async return(x: any) { return (await gen).return(x) },
-      async throw(e: any) { return (await gen).throw(e) },
-      [Symbol.asyncIterator]() { return this },
-    }),
-  })
-
 function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
@@ -677,11 +587,17 @@ function createProxy<T>(
         if (path.length === 0) {
           return { then: () => proxy };
         }
-        const r = requestResponseMessage(ep, {
+        const r = requestResponseWireValue(ep, {
           type: MessageType.GET,
           path: path.map((p) => p.toString()),
-        }).then(fromWireValue);
+        });
         return r.then.bind(r);
+      }
+      if (prop === Symbol.asyncIterator) {
+        if (path.length === 0) {
+          return (() => proxy) as any;
+        }
+        // TODO: what do here?
       }
       return createProxy(ep, [...path, prop]);
     },
@@ -690,7 +606,7 @@ function createProxy<T>(
       // FIXME: ES6 Proxy Handler `set` methods are supposed to return a
       // boolean. To show good will, we return true asynchronously ¯\_(ツ)_/¯
       const [value, transferables] = toWireValue(rawValue);
-      return requestResponseMessage(
+      return requestResponseWireValue(
         ep,
         {
           type: MessageType.SET,
@@ -698,22 +614,22 @@ function createProxy<T>(
           value,
         },
         transferables
-      ).then(fromWireValue) as any;
+      ) as any;
     },
     apply(_target, _thisArg, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const last = path[path.length - 1];
-      if ((last as any) === createEndpoint) {
-        return requestResponseMessage(ep, {
+      if (last === createEndpoint) {
+        return requestResponseWireValue(ep, {
           type: MessageType.ENDPOINT,
-        }).then(fromWireValue);
+        });
       }
       // We just pretend that `bind()` didn’t happen.
       if (last === "bind") {
         return createProxy(ep, path.slice(0, -1));
       }
       const [argumentList, transferables] = processTuple(rawArgumentList);
-      const ret = requestResponseMessage(
+      return requestResponseWireValue(
         ep,
         {
           type: MessageType.APPLY,
@@ -721,16 +637,12 @@ function createProxy<T>(
           argumentList,
         },
         transferables
-      ).then(fromWireValue);
-      // HACK: If caller expects async iter, forward calls to return value once it has resolved.
-      //       Should this be a comlink proxy instead? Shouldn't we know from the wire value what type it is?
-      forwardAsyncIter(ret);
-      return ret;
+      );
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const [argumentList, transferables] = processTuple(rawArgumentList);
-      const ret = requestResponseMessage(
+      return requestResponseWireValue(
         ep,
         {
           type: MessageType.CONSTRUCT,
@@ -738,10 +650,7 @@ function createProxy<T>(
           argumentList,
         },
         transferables
-      ).then(fromWireValue);
-      // FIXME: is this necessary?
-      forwardAsyncIter(ret);
-      return ret;
+      );
     },
   });
   registerProxy(proxy, ep);
@@ -855,6 +764,49 @@ function requestResponseMessage(
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
+}
+
+/** 
+ * A custom promise that traps calls to async generator functions and applies them once the promise is resolved.
+ * FIXME: Should this be a proxy instead that does this for all methods, other than `then`, `catch`, and `finally`?
+ */
+class ForwardAsyncGeneratorPromise<T> implements Promise<T> {
+  constructor(private promise: Promise<T>) { }
+  then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined): Promise<TResult1 | TResult2> {
+    return this.promise.then(onfulfilled, onrejected)
+  }
+  catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null | undefined): Promise<T | TResult> {
+    return this.promise.catch(onrejected)
+  }
+  finally(onfinally?: (() => void) | null | undefined): Promise<T> {
+    return this.promise.finally(onfinally)
+  }
+  get [Symbol.toStringTag]() {
+    return "ForwardAsyncGeneratorPromise"
+  };
+  async next(x: any) {
+    return (<any>await this.promise).next(x);
+  }
+  async return(x: any) {
+    return (<any>await this.promise).return(x);
+  }
+  async throw(x: any) {
+    return (<any>await this.promise).throw(x);
+  }
+  [Symbol.asyncIterator]() {
+    return this;
+  }
+  async [Symbol.asyncDispose]() {
+    return (<any>await this.promise)[Symbol.asyncDispose]();
+  }
+}
+
+function requestResponseWireValue(
+  ep: Endpoint,
+  msg: Message,
+  transfers?: Transferable[]
+): Promise<any> {
+  return new ForwardAsyncGeneratorPromise(requestResponseMessage(ep, msg, transfers).then(fromWireValue));
 }
 
 function generateId(): MessageId {

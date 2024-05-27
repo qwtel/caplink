@@ -91,23 +91,10 @@ export interface ReleaseMessage {
   type: MessageType.RELEASE;
 }
 
-export const enum IterType {
-  NEXT = "NEXT",
-  RETURN = "RETURN",
-  THROW = "THROW",
-}
-
-export type IterMessage = {
-  id?: MessageId
-  type: IterType
-  value: WireValue
-}
-
 export type Message =
   | GetMessage
   | SetMessage
   | ApplyMessage
   | ConstructMessage
   | EndpointMessage
-  | ReleaseMessage
-  | IterMessage;
+  | ReleaseMessage;
