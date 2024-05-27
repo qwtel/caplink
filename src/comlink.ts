@@ -748,16 +748,13 @@ function createProxy<T>(
   return proxy as any;
 }
 
+const flatten: <T>(arr: (T | T[])[]) => T[] = 'flat' in Array.prototype
+  ? arr => arr.flat()
+  : arr => Array.prototype.concat.apply([], arr);
+
 function processTuple(argumentList: any[]): TransferableTuple<WireValue[]> {
-  const length = argumentList.length;
-  const values = new Array<WireValue>(length);
-  const transferables = new Array<Transferable>();
-  for (let i = 0; i < length; i++) {
-    const [v, ts] = toWireValue(argumentList[i]);
-    values[i] = v;
-    if (ts) transferables.push(...ts);
-  }
-  return [values, transferables];
+  const processed = argumentList.map(toWireValue);
+  return [processed.map(v => v[0]), flatten(processed.map(v => v[1]))];
 }
 
 function processRecord(argumentRec: Rec<any>): TransferableTuple<Rec<WireValue>> {
