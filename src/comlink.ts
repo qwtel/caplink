@@ -27,6 +27,10 @@ export const finalizer = Symbol("Comlink.finalizer");
 
 const throwMarker = Symbol("Comlink.thrown");
 
+const generateId: () => MessageId = (import.meta as any).env?.DEV
+  ? () => (Math.random() * 2**32 >>> 0).toString(16)
+  : () => (Math.random() * 2**32 >>> 0);
+
 /**
  * Interface of values that were marked to be proxied with `comlink.proxy()`.
  * Can also be implemented by classes.
@@ -806,8 +810,4 @@ function requestResponseWireValue(
   transfers?: Transferable[]
 ): Promise<any> {
   return new ForwardAsyncGeneratorPromise(requestResponseMessage(ep, msg, transfers).then(fromWireValue));
-}
-
-function generateId(): MessageId {
-  return Math.random() * 2**32 >>> 0;
 }
