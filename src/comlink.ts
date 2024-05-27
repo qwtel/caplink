@@ -252,9 +252,9 @@ export interface TransferHandler<T, S> {
  */
 const proxyTransferHandler = {
   canHandle: (val): val is ProxyMarked => isObject(val) && (val as ProxyMarked)[proxyMarker],
-  serialize(obj) {
+  serialize(obj, { generator = false } = {}) {
     const { port1, port2 } = new MessageChannel();
-    expose(obj, port1);
+    expose(obj, port1, undefined, { generator });
     return [port2, [port2]];
   },
   deserialize(port) {
@@ -275,36 +275,37 @@ const recordTransferHandler = {
   deserialize: (val) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue(val[k]); return ret }
 } satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
 
-const promiseTransferHandler = {
-  canHandle: (val): val is PromiseLike<any> => isObject(val) && 'then' in val,
-  serialize: (val) => {
-    const { port1, port2 } = new MessageChannel();
-    val.then(
-      value => port1.postMessage(...toWireValue(value)),
-      value => port1.postMessage(...toWireValue({ value, [throwMarker]: 0 })),
-    );
-    nullFinalizers?.register(val, port1);
-    port1.start()
-    return [port2, [port2]]
-  },
+// FIXME: bring this back
+// const promiseTransferHandler = {
+//   canHandle: (val): val is PromiseLike<any> => isObject(val) && 'then' in val,
+//   serialize: (val) => {
+//     const { port1, port2 } = new MessageChannel();
+//     val.then(
+//       value => port1.postMessage(...toWireValue(value)),
+//       value => port1.postMessage(...toWireValue({ value, [throwMarker]: 0 })),
+//     );
+//     nullFinalizers?.register(val, port1);
+//     port1.start()
+//     return [port2, [port2]]
+//   },
 
-  deserialize: (port) => {
-    const promise = new Promise((resolve, reject) => {
-      port.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
-        if (ev.data != null) {
-          try {
-            resolve(fromWireValue(ev.data))
-          } catch (err) {
-            reject(err)
-          }
-        }
-        port.close();
-      }, { once: true });
-    });
-    port.start();
-    return promise;
-  }
-} satisfies TransferHandler<PromiseLike<any>, MessagePort>;
+//   deserialize: (port) => {
+//     const promise = new Promise((resolve, reject) => {
+//       port.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
+//         if (ev.data != null) {
+//           try {
+//             resolve(fromWireValue(ev.data))
+//           } catch (err) {
+//             reject(err)
+//           }
+//         }
+//         port.close();
+//       }, { once: true });
+//     });
+//     port.start();
+//     return promise;
+//   }
+// } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
 
 const generatorTransferHandler = {
   canHandle: (val): val is MaybeAsyncGenerator =>
@@ -313,7 +314,7 @@ const generatorTransferHandler = {
     (Symbol.asyncIterator in val || Symbol.iterator in val),
 
   serialize(gen) {
-    return proxyTransferHandler.serialize(proxy(gen));
+    return proxyTransferHandler.serialize(proxy(gen), { generator: true });
   },
 
   deserialize(port) {
@@ -383,7 +384,7 @@ export const transferHandlers = new Map<
   ["throw", throwTransferHandler],
   ["tuple", tupleTransferHandler],
   ["record", recordTransferHandler],
-  ["promise", promiseTransferHandler],
+  // ["promise", promiseTransferHandler],
   ["generator", generatorTransferHandler],
 ]);
 
@@ -423,7 +424,8 @@ function symbolAwareGet(obj: any, prop: string) {
 export function expose(
   obj: any,
   ep: Endpoint = globalThis as any,
-  allowedOrigins: (string | RegExp)[] = ["*"]
+  allowedOrigins: (string | RegExp)[] = ["*"],
+  { generator = false } = {}
 ) {
   ep.addEventListener("message", async function callback(ev) {
     if (!ev || !ev.data) {
@@ -456,6 +458,13 @@ export function expose(
         case MessageType.APPLY:
           {
             returnValue = rawValue.apply(parent, argumentList);
+            if (generator) {
+              const prop = path.at(-1);
+              // Mark the `IterationResult` as a record, otherwise transfers handlers are not applied to the `value` prop:
+              if (prop === "next" || prop === "throw" || prop === "return") {
+                record(returnValue);
+              }
+            }
           }
           break;
         case MessageType.CONSTRUCT:
@@ -588,13 +597,13 @@ function unregisterProxy(proxy: object) {
   proxyFinalizers?.unregister(proxy);
 }
 
-/** @deprecated Should this use Comlink's proxy release functionality instead? */
-function finalizeViaNullMessage(port: MessagePort) {
-  port.postMessage(null)
-  port.close();
-}
-/** @deprecated Should this use Comlink's proxy release functionality instead? */
-const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
+// /** @deprecated Should this use Comlink's proxy release functionality instead? */
+// function finalizeViaNullMessage(port: MessagePort) {
+//   port.postMessage(null)
+//   port.close();
+// }
+// /** @deprecated Should this use Comlink's proxy release functionality instead? */
+// const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
 
 function createProxy<T>(
   ep: Endpoint,

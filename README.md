@@ -1,5 +1,8 @@
 # Comlink Plus
 
+Not for public consumption
+
+<!--
 A fork of [Comlink](https://github.com/GoogleChromeLabs/comlink) that adds missing support for generators and multiple return values.
 
 ## Tuples & Records
@@ -87,5 +90,6 @@ Comlink.expose({
 // Main thread
 await worker.doWork(new Promise(r => setTimeout(r, 100)))
 ```
+-->
 
 
