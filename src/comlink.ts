@@ -12,15 +12,11 @@ import {
   PostMessageWithOrigin,
   WireValue,
   WireValueType,
-  IterMessage,
-  IterType,
   MessageId,
 } from "./protocol";
 export type { Endpoint };
 
 export const proxyMarker = Symbol("Comlink.proxy");
-export const tupleMarker = Symbol("Comlink.tuple")
-export const recordMarker = Symbol("Comlink.record")
 export const createEndpoint = Symbol("Comlink.endpoint");
 /** @deprecated Use `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Comlink.releaseProxy");
@@ -37,16 +33,6 @@ export interface ProxyMarked {
   [proxyMarker]: true;
 }
 
-export interface TupleMarked {
-  [tupleMarker]: true;
-}
-
-export interface RecordMarked {
-  [recordMarker]: true;
-}
-
-type TupleRecordMarker = typeof tupleMarker|typeof recordMarker;
-
 /**
  * Takes a type and wraps it in a Promise, if it not already is one.
  * This is to avoid `Promise<Promise<T>>`.
@@ -54,20 +40,6 @@ type TupleRecordMarker = typeof tupleMarker|typeof recordMarker;
  * This is the inverse of `Unpromisify<T>`.
  */
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
-
-type Unmark<T> = T extends TupleMarked|RecordMarked
-  ? { [P in keyof T as Exclude<P, TupleRecordMarker>]: T[P] }
-  : T
-
-type AsyncIterify<T> = T extends MaybeAsyncGenerator<infer A, infer B, infer C>
-  ? AsyncGenerator<Unmark<ProxyOrClone<A>>, Unmark<ProxyOrClone<B>>, UnproxyOrClone<C>>
-  : T;
-
-type Asyncify<T> = T extends TupleMarked|RecordMarked
-  ? Promise<{ [P in keyof T as Exclude<P, TupleRecordMarker>]: AsyncIterify<T[P]> }>
-  : T extends MaybeAsyncGenerator<infer A, infer B, infer C>
-    ? AsyncGenerator<Unmark<ProxyOrClone<A>>, Unmark<ProxyOrClone<B>>, UnproxyOrClone<C>>
-    : Promisify<T>;
 
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
@@ -79,7 +51,7 @@ type RemoteProperty<T> =
   // If the value is a method, comlink will proxy it automatically.
   // Objects are only proxied if they are marked to be proxied.
   // Otherwise, the property is converted to a Promise that resolves the cloned value.
-  T extends Function | ProxyMarked ? Remote<T> : Asyncify<T>;
+  T extends Function | ProxyMarked ? Remote<T> : Promisify<T>;
 
 /**
  * Takes the raw type of a property as a remote thread would see it through a proxy (e.g. when passed in as a function
@@ -97,19 +69,13 @@ type LocalProperty<T> = T extends Function | ProxyMarked
 /**
  * Proxies `T` if it is a `ProxyMarked`, clones it otherwise (as handled by structured cloning and transfer handlers).
  */
-export type ProxyOrClone<T> = T extends TupleMarked|RecordMarked 
-  ? { [P in keyof T]: ProxyOrClone<T[P]> }
-  : T extends ProxyMarked 
-    ? Remote<T> 
-    : T;
+export type ProxyOrClone<T> = T extends ProxyMarked ? Remote<T> : T;
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
-export type UnproxyOrClone<T> = T extends RemoteObject<TupleMarked|RecordMarked>
-  ? { [P in keyof T ]: UnproxyOrClone<T[P]> }
-  : T extends RemoteObject<ProxyMarked>
-    ? Local<T>
-    : T;
+export type UnproxyOrClone<T> = T extends RemoteObject<ProxyMarked>
+  ? Local<T>
+  : T;
 
 /**
  * Takes the raw type of a remote object in the other thread and returns the type as it is visible to the local thread
@@ -153,7 +119,7 @@ export type Remote<T> =
     (T extends (...args: infer TArguments) => infer TReturn
       ? (
           ...args: { [I in keyof TArguments]: UnproxyOrClone<TArguments[I]> }
-        ) => Asyncify<ProxyOrClone<Awaited<TReturn>>>
+        ) => Promisify<ProxyOrClone<Awaited<TReturn>>>
       : unknown) &
     // Handle construct signature (if present)
     // The return of construct signatures is always proxied (whether marked or not)
@@ -163,7 +129,7 @@ export type Remote<T> =
             ...args: {
               [I in keyof TArguments]: UnproxyOrClone<TArguments[I]>;
             }
-          ): Asyncify<Remote<TInstance>>;
+          ): Promisify<Remote<TInstance>>;
         }
       : unknown) &
     // Include additional special comlink methods available on the proxy.
@@ -173,7 +139,6 @@ export type Remote<T> =
  * Expresses that a type can be either a sync or async.
  */
 type MaybePromise<T> = PromiseLike<T> | T;
-type MaybeAsyncGenerator<T, TReturn, TNext> = Generator<T, TReturn, TNext>|AsyncGenerator<T, TReturn, TNext>;
 
 
 /**
@@ -257,139 +222,6 @@ const proxyTransferHandler = {
   },
 } satisfies TransferHandler<object, MessagePort>;
 
-const tupleTransferHandler = {
-  canHandle: (val): val is any[] => Array.isArray(val) && (val as any[] & TupleMarked)[tupleMarker],
-  serialize: (val) => processTuple(val),
-  deserialize: (val) => val.map(fromWireValue)
-} satisfies TransferHandler<any[], WireValue[]>;
-
-const recordTransferHandler = {
-  canHandle: (val): val is Rec<any> => isObject(val) && (val as RecordMarked)[recordMarker],
-  serialize: (val) => processRecord(val),
-  deserialize: (val) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue(val[k]); return ret }
-} satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
-
-const promiseTransferHandler = {
-  canHandle: (val): val is PromiseLike<any> => isObject(val) && 'then' in val,
-  serialize: (val) => {
-    const { port1, port2 } = new MessageChannel();
-    val.then(
-      value => port1.postMessage(...toWireValue(value)),
-      value => port1.postMessage(...toWireValue({ value, [throwMarker]: 0 })),
-    );
-    nullFinalizers?.register(val, port1);
-    port1.start()
-    return [port2, [port2]]
-  },
-
-  deserialize: (port) => {
-    const promise = new Promise((resolve, reject) => {
-      port.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
-        if (ev.data != null) {
-          try {
-            resolve(fromWireValue(ev.data))
-          } catch (err) {
-            reject(err)
-          }
-        }
-        port.close();
-      }, { once: true });
-    });
-    port.start();
-    return promise;
-  }
-} satisfies TransferHandler<PromiseLike<any>, MessagePort>;
-
-async function postIterMessage(port: MessagePort, getReturnValue: () => MaybePromise<IteratorResult<any>>, id?: MessageId) {
-  let returnValue;
-  try {
-    returnValue = record(await getReturnValue())
-  } catch (value) {
-    returnValue = { value, [throwMarker]: 0 };
-  }
-  try {
-      const [wireValue, transferables] = toWireValue(returnValue);
-      wireValue.id = id;
-      port.postMessage(wireValue, transferables);
-  } catch {
-    // Send Serialization Error To Caller
-    const [wireValue, transferables] = toWireValue({
-      value: new TypeError("Unserializable return value"),
-      [throwMarker]: 0,
-    });
-    wireValue.id = id;
-    port.postMessage(wireValue, transferables);
-  };
-}
-
-const generatorTransferHandler = {
-  canHandle: (val): val is Generator|AsyncGenerator => 
-    isObject(val) && 
-    'next' in val && 
-    'return' in val && 
-    'throw' in val && 
-    (Symbol.asyncIterator in val || Symbol.iterator in val),
-
-  serialize: (gen) => {
-    const { port1, port2 } = new MessageChannel();
-
-    port1.addEventListener("message", async function callback(ev: MessageEvent<IterMessage|null>) {
-      if (ev.data != null) {
-        const { type, id, value } = ev.data;
-        switch (type) {
-          case IterType.NEXT: 
-            postIterMessage(port1, () => gen.next(fromWireValue(value)), id);
-            break;
-          case IterType.RETURN:
-            postIterMessage(port1, () => gen.return(fromWireValue(value)), id);
-            port1.removeEventListener("message", callback);
-            port1.close();
-            break;
-          case IterType.THROW:
-            try {
-              fromWireValue(value);
-            } catch (err) {
-              postIterMessage(port1, () => gen.throw(err), id);
-              port1.removeEventListener("message", callback);
-              port1.close();
-            }
-        }
-      } else {
-        port1.removeEventListener("message", callback);
-        port1.close();
-      }
-    });
-
-    port1.start()
-    return [port2, [port2]]
-  },
-
-  deserialize: (port) => {
-    const generator: AsyncGenerator = {
-      async next(x) {
-        const [wireValue, transfer] = toWireValue(x);
-        const y = await requestResponseMessage(port, { type: IterType.NEXT, value: wireValue }, transfer);
-        return fromWireValue(y);
-      },
-      async return(x) {
-        const [wireValue, transfer] = toWireValue(x);
-        const y = await requestResponseMessage(port, { type: IterType.RETURN, value: wireValue }, transfer);
-        return fromWireValue(y);
-      },
-      async throw(e) {
-        const [wireValue, transfer] = toWireValue({ value: e, [throwMarker]: 0 });
-        const y = await requestResponseMessage(port, { type: IterType.THROW, value: wireValue }, transfer);
-        return fromWireValue(y);
-      },
-      [Symbol.asyncIterator]() { return this },
-    };
-
-    nullFinalizers?.register(generator, port);
-
-    return generator;
-  }
-} satisfies TransferHandler<Generator|AsyncGenerator, MessagePort>;
-
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
   value: unknown;
@@ -398,10 +230,11 @@ type SerializedThrownValue =
   | { isError: true; value: Error }
   | { isError: false; value: unknown };
 
-type PendingListenersMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
-type EndpointMeta = { 
-  pendingListeners: PendingListenersMap, 
-  messageHandler: (ev: MessageEvent<WireValue|null>) => void;
+type ResolverMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
+
+interface EndpointMeta { 
+  readonly resolverMap: ResolverMap, 
+  readonly messageHandler: (ev: MessageEvent<WireValue|null>) => void;
 };
 
 const endpointMeta = new WeakMap<Endpoint, EndpointMeta>;
@@ -450,10 +283,6 @@ export const transferHandlers = new Map<
 >([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
-  ["tuple", tupleTransferHandler],
-  ["record", recordTransferHandler],
-  ["promise", promiseTransferHandler],
-  ["generator", generatorTransferHandler],
 ]);
 
 function isAllowedOrigin(
@@ -579,19 +408,6 @@ function closeEndpoint(endpoint: Endpoint) {
   if (isMessagePort(endpoint)) endpoint.close();
 }
 
-const makeMessageHandler = (pendingListeners: PendingListenersMap) => (ev: MessageEvent<WireValue|null>) => {
-  const { data } = ev;
-  if (!data?.id) {
-    return;
-  }
-  const resolve = pendingListeners.get(data.id);
-  if (!resolve) {
-    return;
-  }
-  pendingListeners.delete(data.id);
-  resolve(data);
-}
-
 export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
   return createProxy<T>(ep, [], target) as any;
 }
@@ -607,9 +423,9 @@ async function releaseEndpoint(ep: Endpoint) {
     type: MessageType.RELEASE,
   });
   if (endpointMeta.has(ep)) {
-    const { pendingListeners, messageHandler } = endpointMeta.get(ep)!;
+    const { resolverMap, messageHandler } = endpointMeta.get(ep)!;
     endpointMeta.delete(ep);
-    pendingListeners.clear();
+    resolverMap.clear();
     ep.removeEventListener("message", messageHandler);
   }
   closeEndpoint(ep);
@@ -624,7 +440,9 @@ async function finalizeEndpoint(ep: Endpoint) {
 }
 
 const proxyCounter = new WeakMap<Endpoint, number>();
-const proxyFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeEndpoint) : undefined;
+const proxyFinalizers = "FinalizationRegistry" in globalThis
+  ? new FinalizationRegistry(finalizeEndpoint)
+  : undefined;
 
 function registerProxy(proxy: object, ep: Endpoint) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
@@ -635,27 +453,6 @@ function registerProxy(proxy: object, ep: Endpoint) {
 function unregisterProxy(proxy: object) {
   proxyFinalizers?.unregister(proxy);
 }
-
-/** @deprecated Should this use Comlink's proxy release functionality instead? */
-function finalizeViaNullMessage(port: MessagePort) {
-  port.postMessage(null)
-  port.close();
-}
-/** @deprecated Should this use Comlink's proxy release functionality instead? */
-const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
-
-const forwardAsyncIter = (gen: Promise<AsyncGenerator>) => 
-  Object.defineProperty(gen, Symbol.asyncIterator, {
-    writable: true,
-    enumerable: false,
-    configurable: true,
-    value: () => ({
-      async next(x: any) { return (await gen).next(x) },
-      async return(x: any) { return (await gen).return(x) },
-      async throw(e: any) { return (await gen).throw(e) },
-      [Symbol.asyncIterator]() { return this },
-    }),
-  })
 
 function createProxy<T>(
   ep: Endpoint,
@@ -713,7 +510,7 @@ function createProxy<T>(
         return createProxy(ep, path.slice(0, -1));
       }
       const [argumentList, transferables] = processTuple(rawArgumentList);
-      const ret = requestResponseMessage(
+      return requestResponseMessage(
         ep,
         {
           type: MessageType.APPLY,
@@ -722,15 +519,11 @@ function createProxy<T>(
         },
         transferables
       ).then(fromWireValue);
-      // HACK: If caller expects async iter, forward calls to return value once it has resolved.
-      //       Should this be a comlink proxy instead? Shouldn't we know from the wire value what type it is?
-      forwardAsyncIter(ret);
-      return ret;
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const [argumentList, transferables] = processTuple(rawArgumentList);
-      const ret = requestResponseMessage(
+      return requestResponseMessage(
         ep,
         {
           type: MessageType.CONSTRUCT,
@@ -739,9 +532,6 @@ function createProxy<T>(
         },
         transferables
       ).then(fromWireValue);
-      // FIXME: is this necessary?
-      forwardAsyncIter(ret);
-      return ret;
     },
   });
   registerProxy(proxy, ep);
@@ -754,18 +544,7 @@ const flatten: <T>(arr: (T | T[])[]) => T[] = 'flat' in Array.prototype
 
 function processTuple(argumentList: any[]): TransferableTuple<WireValue[]> {
   const processed = argumentList.map(toWireValue);
-  return [processed.map(v => v[0]), flatten(processed.map(v => v[1]))];
-}
-
-function processRecord(argumentRec: Rec<any>): TransferableTuple<Rec<WireValue>> {
-  const transferables = new Array<Transferable>();
-  const obj = {} as Rec<WireValue>;
-  for (const key in argumentRec) {
-    const [v, ts] = toWireValue(argumentRec[key]);
-    obj[key] = v;
-    if (ts) transferables.push(...ts);
-  }
-  return [obj, transferables];
+  return [processed.map((v) => v[0]), flatten(processed.map((v) => v[1]))];
 }
 
 const transferCache = new WeakMap<any, Transferable[]>();
@@ -777,18 +556,6 @@ export function transfer<T>(obj: T, transfers: Transferable[]): T {
 export function proxy<T extends {}>(obj: T): T & ProxyMarked {
   const n = obj as T & ProxyMarked;
   n[proxyMarker] = true;
-  return n;
-}
-
-export function tuple<T extends {}>(obj: T): T & TupleMarked {
-  const n = obj as T & TupleMarked;
-  n[tupleMarker] = true;
-  return n;
-}
-
-export function record<T extends {}>(obj: T): T & RecordMarked {
-  const n = obj as T & RecordMarked;
-  n[recordMarker] = true;
   return n;
 }
 
@@ -836,22 +603,35 @@ function fromWireValue(value: WireValue): any {
   }
 }
 
+const makeMessageHandler = (resolverMap: ResolverMap) => (ev: MessageEvent<WireValue|null>) => {
+  const { data } = ev;
+  if (!data?.id) {
+    return;
+  }
+  const resolve = resolverMap.get(data.id);
+  if (!resolve) {
+    return;
+  }
+  resolverMap.delete(data.id);
+  resolve(data);
+}
+
 function requestResponseMessage(
   ep: Endpoint,
   msg: Message,
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
-    let pendingListeners = endpointMeta.get(ep)?.pendingListeners;
-    if (!pendingListeners) {
-      pendingListeners = new Map();
-      const messageHandler = makeMessageHandler(pendingListeners);
-      endpointMeta.set(ep, { pendingListeners, messageHandler });
+    let resolverMap = endpointMeta.get(ep)?.resolverMap;
+    if (!resolverMap) {
+      resolverMap = new Map();
+      const messageHandler = makeMessageHandler(resolverMap);
+      endpointMeta.set(ep, { resolverMap, messageHandler });
       ep.addEventListener("message", messageHandler);
     }
     const id = generateId();
     msg.id = id;
-    pendingListeners.set(id, resolve);
+    resolverMap.set(id, resolve);
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
