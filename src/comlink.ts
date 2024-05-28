@@ -103,6 +103,7 @@ export type LocalObject<T> = { [P in keyof T]: LocalProperty<T[P]> };
  */
 export interface ProxyMethods {
   [createEndpoint]: () => Promise<MessagePort>;
+  [Symbol.dispose]: () => void;
   [Symbol.asyncDispose]: () => Promise<void>;
   /** @deprecated Use `Symbol.asyncDispose` instead */
   [releaseProxy]: () => Promise<void>;
