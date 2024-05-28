@@ -602,15 +602,15 @@ function createProxy<T>(
       if (prop === Symbol.dispose || prop === releaseProxy) {
         return () => {
           isProxyReleased = true;
-          unregisterProxy(ep);
-          finalizeEndpoint(ep).catch(() => {});
+          unregisterProxy(proxy);
+          releaseEndpoint(ep).catch(() => {});
         };
       }
       if (prop === Symbol.asyncDispose) {
         return async () => {
           isProxyReleased = true;
-          unregisterProxy(ep);
-          await finalizeEndpoint(ep);
+          unregisterProxy(proxy);
+          await releaseEndpoint(ep);
         };
       }
       if (prop === "then") {
