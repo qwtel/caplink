@@ -30,17 +30,17 @@ const fn = async () => {
   // const it1 = gen2[Symbol.iterator]?.()
   for await (const value of it2) console.log("RECV2", { value })
 
-  const remoteRec = await remote.getRecord()
+  const remoteRec = await remote.record()
   await using pgen = remoteRec.gen;
   console.log("APROP", remoteRec.prop)
 
-  if ('gc' in self && typeof self.gc === "function") {
-    for await (const value of pgen) console.log("RECVD", { value });
-    self.gc();
-  } else {
-    await using iter = pgen[Symbol.asyncIterator]();
-    for await (const value of iter) console.log("RECVD", { value })
-  }
+  // if ('gc' in self && typeof self.gc === "function") {
+  //   for await (const value of pgen) console.log("RECVD", { value });
+  //   self.gc();
+  // } else {
+  //   await using iter = pgen[Symbol.asyncIterator]();
+  //   for await (const value of iter) console.log("RECVD", { value })
+  // }
 
   // await using cgen = remote.getCustomGen()
   // const foos = await cgen.foo()
