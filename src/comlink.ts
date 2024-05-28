@@ -175,8 +175,6 @@ const isObject = (val: unknown): val is object =>
 
 type TransferableTuple<T> = [value: T, transferables: Transferable[]];
 
-type Rec<T> = Record<PropertyKey, T>
-
 /**
  * Customizes the serialization of certain values as determined by `canHandle()`.
  *
@@ -315,7 +313,7 @@ export function expose(
     }
     ev.data.path ||= [];
     const { id, type, path } = ev.data as Message & { path: string[] }
-    const argumentList = (ev.data.argumentList as any[] || []).map(fromWireValue);
+    const argumentList = (ev.data.argumentList || []).map(fromWireValue);
     let returnValue;
     try {
       const parent = path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
