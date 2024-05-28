@@ -461,11 +461,18 @@ function createProxy<T>(
   const proxy = new Proxy(target, {
     get(_target, prop) {
       throwIfProxyReleased(isProxyReleased);
-      if (prop === releaseProxy || ('asyncDispose' in Symbol && prop === Symbol.asyncDispose)) {
-        return async () => {
-          unregisterProxy(proxy);
-          await releaseEndpoint(ep);
+      if (prop === Symbol.dispose || prop === releaseProxy) {
+        return () => {
           isProxyReleased = true;
+          unregisterProxy(ep);
+          finalizeEndpoint(ep).catch(() => {});
+        };
+      }
+      if (prop === Symbol.asyncDispose) {
+        return async () => {
+          isProxyReleased = true;
+          unregisterProxy(ep);
+          await finalizeEndpoint(ep);
         };
       }
       if (prop === "then") {
