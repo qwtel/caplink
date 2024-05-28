@@ -331,10 +331,10 @@ type SerializedThrownValue =
   | { isError: true; value: Error }
   | { isError: false; value: unknown };
 
-type ResolverMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
+type ResolversMap<K, V> = Map<K, { resolve: (value: MaybePromise<V>) => void, reject: (err: any) => void }>;
 
 interface EndpointMeta { 
-  readonly resolverMap: ResolverMap, 
+  readonly resolversMap: ResolversMap<MessageId, WireValue>;
   readonly messageHandler: (ev: MessageEvent<WireValue|null>) => void;
 };
 
@@ -555,16 +555,18 @@ function throwIfProxyReleased(isReleased: boolean) {
 }
 
 async function releaseEndpoint(ep: Endpoint) {
-  await requestResponseMessage(ep, {
-    type: MessageType.RELEASE,
-  });
   if (endpointMeta.has(ep)) {
-    const { resolverMap, messageHandler } = endpointMeta.get(ep)!;
-    endpointMeta.delete(ep);
-    resolverMap.clear();
+    const { resolversMap, messageHandler } = endpointMeta.get(ep)!;
+    const releasedPromise = requestResponseMessage(ep, {
+      type: MessageType.RELEASE,
+    });
+    endpointMeta.delete(ep); // prevent reentry
+    await releasedPromise;
+    resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled by proxy release', 'AbortError')))
+    resolversMap.clear();
     ep.removeEventListener("message", messageHandler);
+    closeEndpoint(ep);
   }
-  closeEndpoint(ep);
 }
 
 async function finalizeEndpoint(ep: Endpoint) {
@@ -603,6 +605,7 @@ function createProxy<T>(
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
+          // NOTE: Can't await result in sync disposal, swallowing error to prevent unhandled promise rejection.
           releaseEndpoint(ep).catch(() => {});
         };
       }
@@ -769,17 +772,17 @@ function fromWireValue(value: WireValue): any {
   }
 }
 
-const makeMessageHandler = (resolverMap: ResolverMap) => (ev: MessageEvent<WireValue|null>) => {
+const makeMessageHandler = (resolverMap: ResolversMap<MessageId, WireValue>) => (ev: MessageEvent<WireValue|null>) => {
   const { data } = ev;
   if (!data?.id) {
     return;
   }
-  const resolve = resolverMap.get(data.id);
-  if (!resolve) {
+  const resolvers = resolverMap.get(data.id);
+  if (!resolvers) {
     return;
   }
   resolverMap.delete(data.id);
-  resolve(data);
+  resolvers.resolve(data);
 }
 
 function requestResponseMessage(
@@ -787,17 +790,17 @@ function requestResponseMessage(
   msg: Message,
   transfers?: Transferable[]
 ): Promise<WireValue> {
-  return new Promise((resolve) => {
-    let resolverMap = endpointMeta.get(ep)?.resolverMap;
-    if (!resolverMap) {
-      resolverMap = new Map();
-      const messageHandler = makeMessageHandler(resolverMap);
-      endpointMeta.set(ep, { resolverMap, messageHandler });
+  return new Promise((resolve, reject) => {
+    let resolversMap = endpointMeta.get(ep)?.resolversMap;
+    if (!resolversMap) {
+      resolversMap = new Map();
+      const messageHandler = makeMessageHandler(resolversMap);
+      endpointMeta.set(ep, { resolversMap, messageHandler });
       ep.addEventListener("message", messageHandler);
     }
     const id = generateId();
     msg.id = id;
-    resolverMap.set(id, resolve);
+    resolversMap.set(id, { resolve, reject });
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
