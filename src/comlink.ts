@@ -351,6 +351,17 @@ export function expose(
         case MessageType.RELEASE:
           {
             returnValue = undefined;
+
+            // Run finalizers before sending message so caller can be sure that resources are freed up
+            if ('dispose' in Symbol && Symbol.dispose in obj) {
+              obj[Symbol.dispose]();
+            }
+            if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
+              await obj[Symbol.asyncDispose]();
+            }
+            if (finalizer in obj && typeof obj[finalizer] === "function") {
+              obj[finalizer]();
+            }
           }
           break;
         default:
@@ -373,15 +384,6 @@ export function expose(
           // detach and deactivate after sending release response above.
           ep.removeEventListener("message", callback);
           closeEndpoint(ep);
-          if ('dispose' in Symbol && Symbol.dispose in obj) {
-            obj[Symbol.dispose]();
-          }
-          if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
-            await obj[Symbol.asyncDispose]();
-          }
-          if (finalizer in obj && typeof obj[finalizer] === "function") {
-            obj[finalizer]();
-          }
         }
       }
       catch {
