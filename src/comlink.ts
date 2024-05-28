@@ -58,21 +58,9 @@ type TupleOrRecordMarker = typeof tupleMarker|typeof recordMarker;
  */
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
 
-type Unmark<T> = T extends TupleOrRecordMarked
-  ? { [P in keyof T as Exclude<P, TupleOrRecordMarker>]: T[P] }
-  : T
-
-type AsyncifyValue<T> = T extends MaybeAsyncGenerator
-  ? Remote<T>
-  : Promisify<T>;
-
-type AsyncifyTupleOrRecordValue<T> = T extends MaybeAsyncGenerator
-  ? Remote<T>
-  : T;
-
 type Asyncify<T> = T extends TupleOrRecordMarked
-  ? Promise<{ [P in keyof T as Exclude<P, TupleOrRecordMarker>]: AsyncifyTupleOrRecordValue<T[P]> }>
-  : AsyncifyValue<T>;
+  ? Promise<{ [P in keyof T as Exclude<P, TupleOrRecordMarker>]: T[P] }>
+  : Promisify<T>;
 
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
@@ -111,12 +99,10 @@ export type ProxyOrClone<T> = T extends TupleOrRecordMarked
  * Inverse of `ProxyOrClone<T>`.
  */
 export type UnproxyOrClone<T> = T extends RemoteObject<TupleOrRecordMarked>
-  ? { [P in keyof T ]: UnproxyOrClone<T[P]> }
+  ? { [P in keyof T]: UnproxyOrClone<T[P]> }
   : T extends RemoteObject<ProxyMarked>
     ? Local<T>
     : T;
-
-type ReplaceSymbolIterator<K> = K extends typeof Symbol.iterator ? typeof Symbol.asyncIterator : K;
 
 /**
  * Takes the raw type of a remote object in the other thread and returns the type as it is visible to the local thread
@@ -126,7 +112,7 @@ type ReplaceSymbolIterator<K> = K extends typeof Symbol.iterator ? typeof Symbol
  *
  * @template T The raw type of a remote object as seen in the other thread.
  */
-export type RemoteObject<T> = { [P in keyof T as ReplaceSymbolIterator<P>]: RemoteProperty<T[P]> };
+export type RemoteObject<T> = { [P in keyof T]: RemoteProperty<T[P]> };
 /**
  * Takes the type of an object as a remote thread would see it through a proxy (e.g. when passed in as a function
  * argument) and returns the type that the local thread has to supply.
@@ -179,9 +165,6 @@ export type Remote<T> =
 
 /** Expresses that a type can be either a sync or async. */
 type MaybePromise<T> = PromiseLike<T> | T;
-
-/** Expresses that a type can be either an generator or async generator. */
-type MaybeAsyncGenerator<T = unknown, TReturn = any, TNext = unknown> = AsyncGenerator<T, TReturn, TNext> | Generator<T, TReturn, TNext>;
 
 /**
  * Takes the raw type of a remote object, function or class as a remote thread would see it through a proxy (e.g. when
@@ -253,9 +236,9 @@ export interface TransferHandler<T, S> {
  */
 const proxyTransferHandler = {
   canHandle: (val): val is ProxyMarked => isObject(val) && (val as ProxyMarked)[proxyMarker],
-  serialize(obj, { generator = false } = {}) {
+  serialize(obj) {
     const { port1, port2 } = new MessageChannel();
-    expose(obj, port1, undefined, { generator });
+    expose(obj, port1);
     return [port2, [port2]];
   },
   deserialize(port) {
@@ -275,53 +258,6 @@ const recordTransferHandler = {
   serialize: (val) => processRecord(val),
   deserialize: (val) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue(val[k]); return ret }
 } satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
-
-// FIXME: bring this back
-// const promiseTransferHandler = {
-//   canHandle: (val): val is PromiseLike<any> => isObject(val) && 'then' in val,
-//   serialize: (val) => {
-//     const { port1, port2 } = new MessageChannel();
-//     val.then(
-//       value => port1.postMessage(...toWireValue(value)),
-//       value => port1.postMessage(...toWireValue({ value, [throwMarker]: 0 })),
-//     );
-//     nullFinalizers?.register(val, port1);
-//     port1.start()
-//     return [port2, [port2]]
-//   },
-
-//   deserialize: (port) => {
-//     const promise = new Promise((resolve, reject) => {
-//       port.addEventListener("message", (ev: MessageEvent<WireValue|null>) => {
-//         if (ev.data != null) {
-//           try {
-//             resolve(fromWireValue(ev.data))
-//           } catch (err) {
-//             reject(err)
-//           }
-//         }
-//         port.close();
-//       }, { once: true });
-//     });
-//     port.start();
-//     return promise;
-//   }
-// } satisfies TransferHandler<PromiseLike<any>, MessagePort>;
-
-const generatorTransferHandler = {
-  canHandle: (val): val is MaybeAsyncGenerator =>
-    isObject(val) &&
-    'next' in val &&
-    (Symbol.asyncIterator in val || Symbol.iterator in val),
-
-  serialize(gen) {
-    return proxyTransferHandler.serialize(proxy(gen), { generator: true });
-  },
-
-  deserialize(port) {
-    return proxyTransferHandler.deserialize(port) as Remote<AsyncGenerator>
-  }
-} satisfies TransferHandler<MaybeAsyncGenerator, MessagePort>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -386,8 +322,6 @@ export const transferHandlers = new Map<
   ["throw", throwTransferHandler],
   ["tuple", tupleTransferHandler],
   ["record", recordTransferHandler],
-  // ["promise", promiseTransferHandler],
-  ["generator", generatorTransferHandler],
 ]);
 
 function isAllowedOrigin(
@@ -405,29 +339,10 @@ function isAllowedOrigin(
   return false;
 }
 
-/** Restores well-known symbols from their stringified form */
-function symbolAwareGet(obj: any, prop: string) {
-  if (prop.startsWith("Symbol(") && prop.endsWith(")")) {
-    if (prop.startsWith("Symbol(Symbol.")) {
-      // Iterator needs special treatment because sync version is turned into async version when exposed from a endpoint
-      if (prop === "Symbol(Symbol.asyncIterator)") {
-        return Symbol.asyncIterator in obj ? obj[Symbol.asyncIterator] : obj[Symbol.iterator];
-      }
-      const knownSymbol = prop.slice(14, -1) as keyof typeof Symbol;
-      return obj[knownSymbol];
-    }
-    // In case the symbol was created with `Symbol.for` we can recreate it.
-    const sym = prop.slice(7, -1)
-    return obj[Symbol.for(sym)];
-  }
-  return obj[prop];
-}
-
 export function expose(
   obj: any,
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"],
-  { generator = false } = {}
 ) {
   ep.addEventListener("message", async function callback(ev) {
     if (!ev || !ev.data) {
@@ -442,8 +357,8 @@ export function expose(
     const argumentList = (ev.data.argumentList || []).map(fromWireValue);
     let returnValue;
     try {
-      const parent = path.slice(0, -1).reduce(symbolAwareGet, obj);
-      const rawValue = path.reduce(symbolAwareGet, obj);
+      const parent = path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
+      const rawValue = path.reduce((obj, prop) => obj[prop], obj);
       switch (type) {
         case MessageType.GET:
           {
@@ -452,7 +367,6 @@ export function expose(
           break;
         case MessageType.SET:
           {
-            // FIXME: symbol aware set needed?!
             parent[path.slice(-1)[0]] = fromWireValue(ev.data.value);
             returnValue = true;
           }
@@ -460,13 +374,6 @@ export function expose(
         case MessageType.APPLY:
           {
             returnValue = rawValue.apply(parent, argumentList);
-            if (generator) {
-              const prop = path.at(-1);
-              // Mark the `IterationResult` as a record, otherwise transfers handlers are not applied to the `value` prop:
-              if (prop === "next" || prop === "throw" || prop === "return") {
-                record(returnValue);
-              }
-            }
           }
           break;
         case MessageType.CONSTRUCT:
@@ -806,43 +713,10 @@ function requestResponseMessage(
   });
 }
 
-/** A custom promise that traps calls to async generator functions and applies them once the promise is resolved. */
-// FIXME: Should this be a proxy instead that does this for all methods, other than `then`, `catch`, and `finally`?
-class ForwardAsyncGeneratorPromise<T> implements Promise<T> {
-  constructor(private promise: Promise<T>) { }
-  then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined): Promise<TResult1 | TResult2> {
-    return this.promise.then(onfulfilled, onrejected)
-  }
-  catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null | undefined): Promise<T | TResult> {
-    return this.promise.catch(onrejected)
-  }
-  finally(onfinally?: (() => void) | null | undefined): Promise<T> {
-    return this.promise.finally(onfinally)
-  }
-  get [Symbol.toStringTag]() {
-    return "ForwardAsyncGeneratorPromise"
-  };
-  async next(x: any) {
-    return (<any>await this.promise).next(x);
-  }
-  async return(x: any) {
-    return (<any>await this.promise).return(x);
-  }
-  async throw(x: any) {
-    return (<any>await this.promise).throw(x);
-  }
-  [Symbol.asyncIterator]() {
-    return this;
-  }
-  async [Symbol.asyncDispose]() {
-    return (<any>await this.promise)[Symbol.asyncDispose]();
-  }
-}
-
 function requestResponseWireValue(
   ep: Endpoint,
   msg: Message,
   transfers?: Transferable[]
 ): Promise<any> {
-  return new ForwardAsyncGeneratorPromise(requestResponseMessage(ep, msg, transfers).then(fromWireValue));
+  return requestResponseMessage(ep, msg, transfers).then(fromWireValue);
 }
