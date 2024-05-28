@@ -505,7 +505,7 @@ function createProxy<T>(
     apply(_target, _thisArg, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const last = path[path.length - 1];
-      if ((last as any) === createEndpoint) {
+      if (last === createEndpoint) {
         return requestResponseMessage(ep, {
           type: MessageType.ENDPOINT,
         }).then(fromWireValue);
