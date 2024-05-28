@@ -513,11 +513,6 @@ export function expose(
         const [wireValue, transferables] = toWireValue(returnValue);
         wireValue.id = id;
         ep.postMessage(wireValue, transferables);
-        if (type === MessageType.RELEASE) {
-          // detach and deactivate after sending release response above.
-          ep.removeEventListener("message", callback);
-          closeEndpoint(ep);
-        }
       }
       catch {
         // Send Serialization Error To Caller
@@ -527,6 +522,13 @@ export function expose(
         });
         wireValue.id = id;
         ep.postMessage(wireValue, transferables);
+      }
+      finally {
+        if (type === MessageType.RELEASE) {
+          // detach and deactivate after sending release response above.
+          ep.removeEventListener("message", callback);
+          closeEndpoint(ep);
+        }
       }
     }
   });
