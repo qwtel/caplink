@@ -330,10 +330,11 @@ type SerializedThrownValue =
   | { isError: true; value: Error }
   | { isError: false; value: unknown };
 
-type PendingListenersMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
-type EndpointMeta = {
-  pendingListeners: PendingListenersMap,
-  messageHandler: (ev: MessageEvent<WireValue|null>) => void;
+type ResolverMap = Map<MessageId, (value: MaybePromise<WireValue>) => void>;
+
+interface EndpointMeta { 
+  readonly resolverMap: ResolverMap, 
+  readonly messageHandler: (ev: MessageEvent<WireValue|null>) => void;
 };
 
 const endpointMeta = new WeakMap<Endpoint, EndpointMeta>;
@@ -437,7 +438,7 @@ export function expose(
     }
     ev.data.path ||= [];
     const { id, type, path } = ev.data as Message & { path: string[] }
-    const argumentList = (ev.data.argumentList as any[] || []).map(fromWireValue);
+    const argumentList = (ev.data.argumentList || []).map(fromWireValue);
     let returnValue;
     try {
       const parent = path.slice(0, -1).reduce(symbolAwareGet, obj);
@@ -540,19 +541,6 @@ function closeEndpoint(endpoint: Endpoint) {
   if (isMessagePort(endpoint)) endpoint.close();
 }
 
-const makeMessageHandler = (pendingListeners: PendingListenersMap) => (ev: MessageEvent<WireValue|null>) => {
-  const { data } = ev;
-  if (!data?.id) {
-    return;
-  }
-  const resolve = pendingListeners.get(data.id);
-  if (!resolve) {
-    return;
-  }
-  pendingListeners.delete(data.id);
-  resolve(data);
-}
-
 export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
   return createProxy<T>(ep, [], target) as any;
 }
@@ -568,9 +556,9 @@ async function releaseEndpoint(ep: Endpoint) {
     type: MessageType.RELEASE,
   });
   if (endpointMeta.has(ep)) {
-    const { pendingListeners, messageHandler } = endpointMeta.get(ep)!;
+    const { resolverMap, messageHandler } = endpointMeta.get(ep)!;
     endpointMeta.delete(ep);
-    pendingListeners.clear();
+    resolverMap.clear();
     ep.removeEventListener("message", messageHandler);
   }
   closeEndpoint(ep);
@@ -585,7 +573,9 @@ async function finalizeEndpoint(ep: Endpoint) {
 }
 
 const proxyCounter = new WeakMap<Endpoint, number>();
-const proxyFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeEndpoint) : undefined;
+const proxyFinalizers = "FinalizationRegistry" in globalThis
+  ? new FinalizationRegistry(finalizeEndpoint)
+  : undefined;
 
 function registerProxy(proxy: object, ep: Endpoint) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
@@ -597,14 +587,6 @@ function unregisterProxy(proxy: object) {
   proxyFinalizers?.unregister(proxy);
 }
 
-// /** @deprecated Should this use Comlink's proxy release functionality instead? */
-// function finalizeViaNullMessage(port: MessagePort) {
-//   port.postMessage(null)
-//   port.close();
-// }
-// /** @deprecated Should this use Comlink's proxy release functionality instead? */
-// const nullFinalizers = "FinalizationRegistry" in globalThis ? new FinalizationRegistry(finalizeViaNullMessage) : undefined;
-
 function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
@@ -614,11 +596,18 @@ function createProxy<T>(
   const proxy = new Proxy(target, {
     get(_target, prop) {
       throwIfProxyReleased(isProxyReleased);
-      if (prop === releaseProxy || ('asyncDispose' in Symbol && prop === Symbol.asyncDispose)) {
-        return async () => {
-          unregisterProxy(proxy);
-          await releaseEndpoint(ep);
+      if (prop === Symbol.dispose || prop === releaseProxy) {
+        return () => {
           isProxyReleased = true;
+          unregisterProxy(ep);
+          finalizeEndpoint(ep).catch(() => {});
+        };
+      }
+      if (prop === Symbol.asyncDispose) {
+        return async () => {
+          isProxyReleased = true;
+          unregisterProxy(ep);
+          await finalizeEndpoint(ep);
         };
       }
       if (prop === "then") {
@@ -695,7 +684,7 @@ const flatten: <T>(arr: (T | T[])[]) => T[] = 'flat' in Array.prototype
 
 function processTuple(argumentList: any[]): TransferableTuple<WireValue[]> {
   const processed = argumentList.map(toWireValue);
-  return [processed.map(v => v[0]), flatten(processed.map(v => v[1]))];
+  return [processed.map((v) => v[0]), flatten(processed.map((v) => v[1]))];
 }
 
 function processRecord(argumentRec: Rec<any>): TransferableTuple<Rec<WireValue>> {
@@ -777,22 +766,35 @@ function fromWireValue(value: WireValue): any {
   }
 }
 
+const makeMessageHandler = (resolverMap: ResolverMap) => (ev: MessageEvent<WireValue|null>) => {
+  const { data } = ev;
+  if (!data?.id) {
+    return;
+  }
+  const resolve = resolverMap.get(data.id);
+  if (!resolve) {
+    return;
+  }
+  resolverMap.delete(data.id);
+  resolve(data);
+}
+
 function requestResponseMessage(
   ep: Endpoint,
   msg: Message,
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve) => {
-    let pendingListeners = endpointMeta.get(ep)?.pendingListeners;
-    if (!pendingListeners) {
-      pendingListeners = new Map();
-      const messageHandler = makeMessageHandler(pendingListeners);
-      endpointMeta.set(ep, { pendingListeners, messageHandler });
+    let resolverMap = endpointMeta.get(ep)?.resolverMap;
+    if (!resolverMap) {
+      resolverMap = new Map();
+      const messageHandler = makeMessageHandler(resolverMap);
+      endpointMeta.set(ep, { resolverMap, messageHandler });
       ep.addEventListener("message", messageHandler);
     }
     const id = generateId();
     msg.id = id;
-    pendingListeners.set(id, resolve);
+    resolverMap.set(id, resolve);
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
