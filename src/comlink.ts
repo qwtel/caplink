@@ -163,7 +163,9 @@ export type Remote<T> =
     // Include additional special comlink methods available on the proxy.
     ProxyMethods;
 
-/** Expresses that a type can be either a sync or async. */
+/**
+ * Expresses that a type can be either a sync or async.
+ */
 type MaybePromise<T> = PromiseLike<T> | T;
 
 /**
