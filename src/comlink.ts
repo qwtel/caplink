@@ -607,8 +607,8 @@ function createProxy<T>(
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          // NOTE: Can't await result in sync disposal, swallowing error to prevent unhandled promise rejection.
-          releaseEndpoint(ep).catch(() => {});
+          // NOTE: Can't await result in sync disposal. Error will be reported as unhandled promise rejection
+          releaseEndpoint(ep)
         };
       }
       if (prop === Symbol.asyncDispose) {
