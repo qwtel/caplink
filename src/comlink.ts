@@ -136,6 +136,25 @@ export type Remote<T> =
     // Include additional special comlink methods available on the proxy.
     ProxyMethods;
 
+type TRemoteProperty<T> = T extends Function | ProxyMarked ? TRemote<T> : Promisify<T>;
+export type TRemoteObject<T> = { [P in keyof T]: TRemoteProperty<T[P]> };
+export type TRemote<T> =
+  TRemoteObject<T> &
+    (T extends (...args: infer TArguments) => infer TReturn
+      ? (
+          ...args: { [I in keyof TArguments]: UnproxyOrClone<TArguments[I]> }
+        ) => Promisify<ProxyOrClone<Awaited<TReturn>>>
+      : unknown) &
+    (T extends { new (...args: infer TArguments): infer TInstance }
+      ? {
+          new (
+            ...args: {
+              [I in keyof TArguments]: UnproxyOrClone<TArguments[I]>;
+            }
+          ): Promisify<Remote<TInstance>>;
+        }
+      : unknown)
+
 /**
  * Expresses that a type can be either a sync or async.
  */
