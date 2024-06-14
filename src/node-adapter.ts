@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Endpoint } from "./protocol";
+import type { Endpoint } from "./protocol";
 
 export interface NodeEndpoint {
   postMessage(message: any, transfer?: any[]): void;
@@ -21,7 +21,8 @@ export interface NodeEndpoint {
   start?: () => void;
 }
 
-export default function nodeEndpoint(nep: NodeEndpoint): Endpoint {
+export default function nodeEndpoint(nep: Endpoint|NodeEndpoint): Endpoint {
+  if (!('on' in nep) || !('off' in nep)) return nep;
   const listeners = new WeakMap();
   return {
     postMessage: nep.postMessage.bind(nep),
