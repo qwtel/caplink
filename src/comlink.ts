@@ -447,7 +447,7 @@ async function releaseEndpoint(ep: Endpoint) {
       type: MessageType.RELEASE,
     });
     endpointMeta.delete(ep); // prevent reentry
-    await releasedPromise;
+    await releasedPromise.catch(() => {});
     resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled by proxy release', 'AbortError')))
     resolversMap.clear();
     ep.removeEventListener("message", messageHandler);
