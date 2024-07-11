@@ -19,6 +19,7 @@ export interface PostMessageWithOrigin {
 export interface Endpoint extends ReceiverEndpoint {
   postMessage(message: any, transfer?: Transferable[]): void;
   start?: () => void;
+  createMessageChannel?: () => MessageChannel;
 }
 
 export const enum WireValueType {

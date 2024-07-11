@@ -207,21 +207,21 @@ export interface TransferHandler<T, S> {
    * should serialize the value, which includes checking that it is of the right
    * type (but can perform checks beyond that as well).
    */
-  canHandle(value: unknown): value is T;
+  canHandle(value: unknown, ep: Endpoint): value is T;
 
   /**
    * Gets called with the value if `canHandle()` returned `true` to produce a
    * value that can be sent in a message, consisting of structured-cloneable
    * values and/or transferrable objects.
    */
-  serialize(value: T): TransferableTuple<S>;
+  serialize(value: T, ep: Endpoint): TransferableTuple<S>;
 
   /**
    * Gets called to deserialize an incoming value that was serialized in the
    * other thread with this transfer handler (known through the name it was
    * registered under).
    */
-  deserialize(value: S): T;
+  deserialize(value: S, ep: Endpoint): T;
 }
 
 /**
@@ -229,8 +229,8 @@ export interface TransferHandler<T, S> {
  */
 const proxyTransferHandler = {
   canHandle: (val): val is ProxyMarked => isObject(val) && (val as ProxyMarked)[proxyMarker],
-  serialize(obj) {
-    const { port1, port2 } = new MessageChannel();
+  serialize(obj, ep) {
+    const { port1, port2 } = ep.createMessageChannel?.() ?? new MessageChannel();
     expose(obj, port1);
     return [port2, [port2]];
   },
@@ -333,7 +333,7 @@ export function expose(
     }
     ev.data.path ||= [];
     const { id, type, path } = ev.data as Message & { path: string[] }
-    const argumentList = (ev.data.argumentList || []).map(fromWireValue);
+    const argumentList = (ev.data.argumentList as any[] || []).map(fromWireValue, ep);
     let returnValue;
     try {
       const parent = path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
@@ -346,7 +346,7 @@ export function expose(
           break;
         case MessageType.SET:
           {
-            parent[path.slice(-1)[0]] = fromWireValue(ev.data.value);
+            parent[path.slice(-1)[0]] = fromWireValue.call(ep, ev.data.value);
             returnValue = true;
           }
           break;
@@ -363,7 +363,7 @@ export function expose(
           break;
         case MessageType.ENDPOINT:
           {
-            const { port1, port2 } = new MessageChannel();
+            const { port1, port2 } = ep.createMessageChannel?.() ?? new MessageChannel();
             expose(obj, port2);
             returnValue = transfer(port1, [port1]);
           }
@@ -397,13 +397,13 @@ export function expose(
     }
     {
       try {
-        const [wireValue, transferables] = toWireValue(returnValue);
+        const [wireValue, transferables] = toWireValue.call(ep, returnValue);
         wireValue.id = id;
         ep.postMessage(wireValue, transferables);
       }
       catch {
         // Send Serialization Error To Caller
-        const [wireValue, transferables] = toWireValue({
+        const [wireValue, transferables] = toWireValue.call(ep, {
           value: new TypeError("Unserializable return value"),
           [throwMarker]: 0,
         });
@@ -509,7 +509,7 @@ function createProxy<T>(
         const r = requestResponseMessage(ep, {
           type: MessageType.GET,
           path: path.map((p) => p.toString()),
-        }).then(fromWireValue);
+        }).then(fromWireValue.bind(ep));
         return r.then.bind(r);
       }
       return createProxy(ep, [...path, prop]);
@@ -518,7 +518,7 @@ function createProxy<T>(
       throwIfProxyReleased(isProxyReleased);
       // FIXME: ES6 Proxy Handler `set` methods are supposed to return a
       // boolean. To show good will, we return true asynchronously ¯\_(ツ)_/¯
-      const [value, transferables] = toWireValue(rawValue);
+      const [value, transferables] = toWireValue.call(ep, rawValue);
       return requestResponseMessage(
         ep,
         {
@@ -527,7 +527,7 @@ function createProxy<T>(
           value,
         },
         transferables
-      ).then(fromWireValue) as any;
+      ).then(fromWireValue.bind(ep)) as any;
     },
     apply(_target, _thisArg, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
@@ -535,13 +535,13 @@ function createProxy<T>(
       if (last === createEndpoint) {
         return requestResponseMessage(ep, {
           type: MessageType.ENDPOINT,
-        }).then(fromWireValue);
+        }).then(fromWireValue.bind(ep));
       }
       // We just pretend that `bind()` didn’t happen.
       if (last === "bind") {
         return createProxy(ep, path.slice(0, -1));
       }
-      const [argumentList, transferables] = processTuple(rawArgumentList);
+      const [argumentList, transferables] = processTuple(rawArgumentList, ep);
       return requestResponseMessage(
         ep,
         {
@@ -550,11 +550,11 @@ function createProxy<T>(
           argumentList,
         },
         transferables
-      ).then(fromWireValue);
+      ).then(fromWireValue.bind(ep));
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
-      const [argumentList, transferables] = processTuple(rawArgumentList);
+      const [argumentList, transferables] = processTuple(rawArgumentList, ep);
       return requestResponseMessage(
         ep,
         {
@@ -563,7 +563,7 @@ function createProxy<T>(
           argumentList,
         },
         transferables
-      ).then(fromWireValue);
+      ).then(fromWireValue.bind(ep));
     },
   });
   registerProxy(proxy, ep);
@@ -574,8 +574,8 @@ const flatten: <T>(arr: (T | T[])[]) => T[] = 'flat' in Array.prototype
   ? arr => arr.flat()
   : arr => Array.prototype.concat.apply([], arr);
 
-function processTuple(argumentList: any[]): TransferableTuple<WireValue[]> {
-  const processed = argumentList.map(toWireValue);
+function processTuple(argumentList: any[], ep: Endpoint): TransferableTuple<WireValue[]> {
+  const processed = argumentList.map(toWireValue, ep);
   return [processed.map((v) => v[0]), flatten(processed.map((v) => v[1]))];
 }
 
@@ -603,10 +603,10 @@ export function windowEndpoint(
   };
 }
 
-function toWireValue(value: any): TransferableTuple<WireValue> {
+function toWireValue(this: Endpoint, value: any): TransferableTuple<WireValue> {
   for (const [name, handler] of transferHandlers) {
-    if (handler.canHandle(value)) {
-      const [serializedValue, transferables] = handler.serialize(value);
+    if (handler.canHandle(value, this)) {
+      const [serializedValue, transferables] = handler.serialize(value, this);
       return [
         {
           type: WireValueType.HANDLER,
@@ -626,10 +626,10 @@ function toWireValue(value: any): TransferableTuple<WireValue> {
   ];
 }
 
-function fromWireValue(value: WireValue): any {
+function fromWireValue(this: Endpoint, value: WireValue): any {
   switch (value.type) {
     case WireValueType.HANDLER:
-      return transferHandlers.get(value.name)!.deserialize(value.value);
+      return transferHandlers.get(value.name)!.deserialize(value.value, this);
     case WireValueType.RAW:
       return value.value;
   }
