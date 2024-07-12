@@ -38,7 +38,10 @@ export interface ProxyMarked {
   [proxyMarker]: true;
 }
 
-export interface ProxyLike {
+/**
+ * Interface for our own proxy objects. The defining characteristic is the ability to get the underlying message port.
+ */
+interface OurProxy {
   [exportEndpoint](): MessagePort
 }
 
@@ -234,22 +237,6 @@ export interface TransferHandler<T, S> {
   deserialize(value: S, ep: Endpoint): T;
 }
 
-/**
- * Internal transfer handle to handle objects marked to proxy.
- */
-const proxyTransferHandler = {
-  canHandle: (val): val is ProxyMarked => isReceiver(val) && proxyMarker in val,
-  serialize(obj, ep) {
-    const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
-    expose(obj, port1);
-    return [port2, [port2]];
-  },
-  deserialize(port) {
-    port.start();
-    return wrap(port);
-  },
-} satisfies TransferHandler<{}, MessagePort>;
-
 const isNativeEndpoint = (x: unknown): x is Worker|MessagePort => {
   return ('Worker' in globalThis && x instanceof globalThis.Worker) || ('MessagePort' in globalThis && x instanceof globalThis.MessagePort);
 }
@@ -258,26 +245,31 @@ const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => 
 }
 
 /**
- * Internal transfer handler to allow forwarding proxies to other locations.
+ * Internal transfer handle to handle objects marked to proxy.
  */
-const proxyForwardTransferHandler = {
-  canHandle: (val): val is ProxyLike => isReceiver(val) && exportEndpoint in val,
+const proxyTransferHandler = {
+  canHandle: (val): val is ProxyMarked|OurProxy => isReceiver(val) && (proxyMarker in val || exportEndpoint in val),
   serialize(obj, ep) {
-    let port = obj[exportEndpoint]();
-
-    if (isNativeEndpoint(ep) && isNativeConvertible(port)) {
-      port = port[toNative]();
-    } else if (ep[adaptNative] && isNativeEndpoint(port)) {
-      port = ep[adaptNative](port);
+    let port;
+    if (exportEndpoint in obj) {
+      port = obj[exportEndpoint]();
+      if (isNativeEndpoint(ep) && isNativeConvertible(port)) {
+        port = port[toNative]();
+      } else if (ep[adaptNative] && isNativeEndpoint(port)) {
+        port = ep[adaptNative](port);
+      }
+    } else {
+      const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
+      expose(obj, port1);
+      port = port2;
     }
-
-    return [port, [port]]
+    return [port, [port]];
   },
   deserialize(port) {
     port.start();
     return wrap(port);
   },
-} satisfies TransferHandler<ProxyLike, MessagePort>
+} satisfies TransferHandler<ProxyMarked|OurProxy, MessagePort>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -340,7 +332,6 @@ export const transferHandlers = new Map<
 >([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
-  ["endpoint", proxyForwardTransferHandler],
 ]);
 
 function isAllowedOrigin(
