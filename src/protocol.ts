@@ -8,6 +8,10 @@ import type { TypedEventTarget } from "@worker-tools/typed-event-target";
 
 export type ReceiverEndpoint = Pick<TypedEventTarget<MessagePortEventMap>, "addEventListener"|"removeEventListener">;
 
+export const messageChannel = Symbol('Comlink.channelSpecies');
+export const adaptNative = Symbol('Comlink.adaptNative');
+export const toNative = Symbol('Comlink.toNative');
+
 export interface PostMessageWithOrigin {
   postMessage(
     message: any,
@@ -19,7 +23,9 @@ export interface PostMessageWithOrigin {
 export interface Endpoint extends ReceiverEndpoint {
   postMessage(message: any, transfer?: Transferable[]): void;
   start?: () => void;
-  createMessageChannel?: () => MessageChannel;
+  [messageChannel]?: typeof MessageChannel;
+  [adaptNative]?: (port: MessagePort) => MessagePort;
+  [toNative]?: () => MessagePort;
 }
 
 export const enum WireValueType {

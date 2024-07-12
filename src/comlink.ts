@@ -13,15 +13,20 @@ import {
   WireValue,
   WireValueType,
   MessageId,
+  messageChannel,
+  toNative,
+  adaptNative,
 } from "./protocol";
 export type { Endpoint };
 
 export const proxyMarker = Symbol("Comlink.proxy");
 export const createEndpoint = Symbol("Comlink.endpoint");
+export const exportEndpoint = Symbol("Comlink.exportEndpoint");
 /** @deprecated Use `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Comlink.releaseProxy");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const finalizer = Symbol("Comlink.finalizer");
+export { messageChannel, toNative, adaptNative };
 
 const throwMarker = Symbol("Comlink.thrown");
 
@@ -31,6 +36,10 @@ const throwMarker = Symbol("Comlink.thrown");
  */
 export interface ProxyMarked {
   [proxyMarker]: true;
+}
+
+export interface ProxyLike {
+  [exportEndpoint](): MessagePort
 }
 
 /**
@@ -103,6 +112,7 @@ export type LocalObject<T> = { [P in keyof T]: LocalProperty<T[P]> };
  */
 export interface ProxyMethods {
   [createEndpoint]: () => Promise<MessagePort>;
+  [exportEndpoint]: () => MessagePort;
   [Symbol.dispose]: () => void;
   [Symbol.asyncDispose]: () => Promise<void>;
   /** @deprecated Use `Symbol.asyncDispose` instead */
@@ -190,7 +200,7 @@ export type Local<T> =
         }
       : unknown);
 
-const isObject = (val: unknown): val is object =>
+const isReceiver = (val: unknown): val is {} =>
   (typeof val === "object" && val !== null) || typeof val === "function";
 
 type TransferableTuple<T> = [value: T, transferables: Transferable[]];
@@ -228,9 +238,9 @@ export interface TransferHandler<T, S> {
  * Internal transfer handle to handle objects marked to proxy.
  */
 const proxyTransferHandler = {
-  canHandle: (val): val is ProxyMarked => isObject(val) && (val as ProxyMarked)[proxyMarker],
+  canHandle: (val): val is ProxyMarked => isReceiver(val) && proxyMarker in val,
   serialize(obj, ep) {
-    const { port1, port2 } = ep.createMessageChannel?.() ?? new MessageChannel();
+    const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
     expose(obj, port1);
     return [port2, [port2]];
   },
@@ -238,7 +248,36 @@ const proxyTransferHandler = {
     port.start();
     return wrap(port);
   },
-} satisfies TransferHandler<object, MessagePort>;
+} satisfies TransferHandler<{}, MessagePort>;
+
+const isNativeEndpoint = (x: unknown): x is Worker|MessagePort => {
+  return ('Worker' in globalThis && x instanceof globalThis.Worker) || ('MessagePort' in globalThis && x instanceof globalThis.MessagePort);
+}
+const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => {
+  return isReceiver(x) && toNative in x;
+}
+
+/**
+ * Internal transfer handler to allow forwarding proxies to other locations.
+ */
+const proxyForwardTransferHandler = {
+  canHandle: (val): val is ProxyLike => isReceiver(val) && exportEndpoint in val,
+  serialize(obj, ep) {
+    let port = obj[exportEndpoint]();
+
+    if (isNativeEndpoint(ep) && isNativeConvertible(port)) {
+      port = port[toNative]();
+    } else if (ep[adaptNative] && isNativeEndpoint(port)) {
+      port = ep[adaptNative](port);
+    }
+
+    return [port, [port]]
+  },
+  deserialize(port) {
+    port.start();
+    return wrap(port);
+  },
+} satisfies TransferHandler<ProxyLike, MessagePort>
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -264,7 +303,7 @@ const throwTransferHandler: TransferHandler<
   ThrownValue,
   SerializedThrownValue
 > = {
-  canHandle: (value): value is ThrownValue => isObject(value) && throwMarker in value,
+  canHandle: (value): value is ThrownValue => isReceiver(value) && throwMarker in value,
   serialize({ value }) {
     let serialized: SerializedThrownValue;
     if (value instanceof Error) {
@@ -301,6 +340,7 @@ export const transferHandlers = new Map<
 >([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
+  ["endpoint", proxyForwardTransferHandler],
 ]);
 
 function isAllowedOrigin(
@@ -363,7 +403,7 @@ export function expose(
           break;
         case MessageType.ENDPOINT:
           {
-            const { port1, port2 } = ep.createMessageChannel?.() ?? new MessageChannel();
+            const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
             expose(obj, port2);
             returnValue = transfer(port1, [port1]);
           }
@@ -401,7 +441,8 @@ export function expose(
         wireValue.id = id;
         ep.postMessage(wireValue, transferables);
       }
-      catch {
+      catch (err) {
+        console.error(err)
         // Send Serialization Error To Caller
         const [wireValue, transferables] = toWireValue.call(ep, {
           value: new TypeError("Unserializable return value"),
@@ -422,12 +463,12 @@ export function expose(
   ep.start?.();
 }
 
-function isMessagePort(endpoint: Endpoint): endpoint is MessagePort {
-  return endpoint instanceof MessagePort || endpoint.constructor.name === "MessagePort";
+function isCloseable(endpoint: object): endpoint is { close(): void } {
+  return 'close' in endpoint && typeof endpoint.close === 'function';
 }
 
 function closeEndpoint(endpoint: Endpoint) {
-  if (isMessagePort(endpoint)) endpoint.close();
+  if (isCloseable(endpoint)) endpoint.close();
 }
 
 export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
@@ -491,7 +532,7 @@ function createProxy<T>(
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          // NOTE: Can't await result in sync disposal. Error will be reported as unhandled promise rejection
+          // Can't await result in sync disposal. Error will be reported as unhandled promise rejection
           releaseEndpoint(ep)
         };
       }
@@ -500,6 +541,14 @@ function createProxy<T>(
           isProxyReleased = true;
           unregisterProxy(proxy);
           await releaseEndpoint(ep);
+        };
+      }
+      if (prop === exportEndpoint) {
+        return () => {
+          isProxyReleased = true; 
+          unregisterProxy(proxy);
+          // Not releasing endpoint. The point of exporting the endpoint is to forward it to other locations. User is in charge of releasing it. 
+          return ep;
         };
       }
       if (prop === "then") {
@@ -565,6 +614,19 @@ function createProxy<T>(
         transferables
       ).then(fromWireValue.bind(ep));
     },
+    has(_target, prop) {
+      throwIfProxyReleased(isProxyReleased);
+      // Can only check for known local properties, the rest can only be determined asynchronously, so we can only return `false` in that case.
+      return (
+        prop === Symbol.dispose || 
+        prop === releaseProxy ||
+        prop === Symbol.asyncDispose ||
+        prop === createEndpoint ||
+        prop === exportEndpoint ||
+        prop === "then" ||
+        prop === "bind"
+      );
+    }
   });
   registerProxy(proxy, ep);
   return proxy as any;
