@@ -40,7 +40,7 @@ export interface ProxyMarked {
 /**
  * Interface for our own proxy objects. The defining characteristic is the ability to get the underlying message port.
  */
-interface OurProxy {
+interface Proxy {
   [createEndpoint](): MessagePort
 }
 
@@ -227,7 +227,7 @@ const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => 
  * Internal transfer handle to handle objects marked to proxy.
  */
 const proxyTransferHandler = {
-  canHandle: (val): val is ProxyMarked|OurProxy => isReceiver(val) && (proxyMarker in val || createEndpoint in val),
+  canHandle: (val): val is Proxy|ProxyMarked => isReceiver(val) && (proxyMarker in val || createEndpoint in val),
   serialize(obj, ep) {
     let port;
     if (createEndpoint in obj) {
@@ -248,7 +248,7 @@ const proxyTransferHandler = {
     port.start();
     return wrap(port);
   },
-} satisfies TransferHandler<ProxyMarked|OurProxy, MessagePort>;
+} satisfies TransferHandler<Proxy|ProxyMarked, MessagePort>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
