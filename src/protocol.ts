@@ -91,6 +91,7 @@ export interface ConstructMessage {
 export interface EndpointMessage {
   id?: MessageId;
   type: MessageType.ENDPOINT;
+  value: MessagePort;
 }
 
 export interface ReleaseMessage {

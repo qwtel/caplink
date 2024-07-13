@@ -21,7 +21,6 @@ export type { Endpoint };
 
 export const proxyMarker = Symbol("Comlink.proxy");
 export const createEndpoint = Symbol("Comlink.endpoint");
-export const exportEndpoint = Symbol("Comlink.exportEndpoint");
 /** @deprecated Use `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Comlink.releaseProxy");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
@@ -42,7 +41,7 @@ export interface ProxyMarked {
  * Interface for our own proxy objects. The defining characteristic is the ability to get the underlying message port.
  */
 interface OurProxy {
-  [exportEndpoint](): MessagePort
+  [createEndpoint](): MessagePort
 }
 
 /**
@@ -114,8 +113,7 @@ export type LocalObject<T> = { [P in keyof T]: LocalProperty<T[P]> };
  * Additional special comlink methods available on each proxy returned by `Comlink.wrap()`.
  */
 export interface ProxyMethods {
-  [createEndpoint]: () => Promise<MessagePort>;
-  [exportEndpoint]: () => MessagePort;
+  [createEndpoint]: () => MessagePort;
   [Symbol.dispose]: () => void;
   [Symbol.asyncDispose]: () => Promise<void>;
   /** @deprecated Use `Symbol.asyncDispose` instead */
@@ -229,11 +227,11 @@ const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => 
  * Internal transfer handle to handle objects marked to proxy.
  */
 const proxyTransferHandler = {
-  canHandle: (val): val is ProxyMarked|OurProxy => isReceiver(val) && (proxyMarker in val || exportEndpoint in val),
+  canHandle: (val): val is ProxyMarked|OurProxy => isReceiver(val) && (proxyMarker in val || createEndpoint in val),
   serialize(obj, ep) {
     let port;
-    if (exportEndpoint in obj) {
-      port = obj[exportEndpoint]();
+    if (createEndpoint in obj) {
+      port = obj[createEndpoint]();
       if (isNativeEndpoint(ep) && isNativeConvertible(port)) {
         port = port[toNative]();
       } else if (ep[adaptNative] && isNativeEndpoint(port)) {
@@ -334,12 +332,16 @@ function isOurMessage(val: unknown): val is Message {
   return isReceiver(val) && "type" in val && "id" in val;
 }
 
+const objectCounter = new WeakMap<object, number>();
+
 export function expose(
-  obj: any,
+  object: object,
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
+  objectCounter.set(object, (objectCounter.get(object) || 0) + 1);
   ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>) {
+    const obj = object as any;
     if (!ev || !ev.data || !isOurMessage(ev.data)) {
       return;
     }
@@ -383,24 +385,27 @@ export function expose(
           break;
         case MessageType.ENDPOINT:
           {
-            const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
-            expose(obj, port2);
-            returnValue = transfer(port1, [port1]);
+            if (data.value !== ev.ports[0]) throw new Error("Assertion error"); // XXX: delete me
+            expose(obj, data.value);
+            returnValue = undefined;
           }
           break;
         case MessageType.RELEASE:
           {
             returnValue = undefined;
-
-            // Run finalizers before sending message so caller can be sure that resources are freed up
-            if ('dispose' in Symbol && Symbol.dispose in obj) {
-              obj[Symbol.dispose]();
-            }
-            if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
-              await obj[Symbol.asyncDispose]();
-            }
-            if (finalizer in obj && typeof obj[finalizer] === "function") {
-              obj[finalizer]();
+            const newCount = (objectCounter.get(obj) || 0) - 1;
+            objectCounter.set(obj, newCount);
+            if (newCount === 0) {
+              // Run finalizers before sending message so caller can be sure that resources are freed up
+              if ('dispose' in Symbol && Symbol.dispose in obj) {
+                obj[Symbol.dispose]();
+              }
+              if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
+                await obj[Symbol.asyncDispose]();
+              }
+              if (finalizer in obj && typeof obj[finalizer] === "function") {
+                obj[finalizer]();
+              }
             }
           }
           break;
@@ -523,14 +528,6 @@ function createProxy<T>(
           await releaseEndpoint(ep);
         };
       }
-      if (prop === exportEndpoint) {
-        return () => {
-          isProxyReleased = true; 
-          unregisterProxy(proxy);
-          // Not releasing endpoint. The point of exporting the endpoint is to forward it to other locations. User is in charge of releasing it. 
-          return ep;
-        };
-      }
       if (prop === "then") {
         if (path.length === 0) {
           return { then: () => proxy };
@@ -562,9 +559,17 @@ function createProxy<T>(
       throwIfProxyReleased(isProxyReleased);
       const last = path[path.length - 1];
       if (last === createEndpoint) {
-        return requestResponseMessage(ep, {
+        const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
+        requestResponseMessage(ep, {
           type: MessageType.ENDPOINT,
-        }).then(fromWireValue.bind(ep));
+          value: port2,
+        }, [port2]).catch(() => {
+          // XXX: Should these events be dispatched? Should they dispatch on the parent endpoint or the new port?
+          // port1.dispatchEvent(new MessageEvent('messageerror', { data: err }));
+          // ep.dispatchEvent(new ErrorEvent('error', { error: Error('Failed to create endpoint') }));
+          port1.close();
+        });
+        return port1;
       }
       // We just pretend that `bind()` didn’t happen.
       if (last === "bind") {
@@ -602,7 +607,6 @@ function createProxy<T>(
         prop === releaseProxy ||
         prop === Symbol.asyncDispose ||
         prop === createEndpoint ||
-        prop === exportEndpoint ||
         prop === "then" ||
         prop === "bind"
       );
