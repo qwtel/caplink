@@ -428,19 +428,19 @@ export function expose(
     }
     {
       try {
-        const [wireValue, transferables] = toWireValue.call(ep, returnValue);
+        const [wireValue, transfer] = toWireValue.call(ep, returnValue);
         wireValue.id = id;
-        ep.postMessage(wireValue, transferables);
+        (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       catch (err) {
         console.error(err)
         // Send Serialization Error To Caller
-        const [wireValue, transferables] = toWireValue.call(ep, {
+        const [wireValue, transfer] = toWireValue.call(ep, {
           value: new TypeError("Unserializable return value"),
           [throwMarker]: 0,
         });
         wireValue.id = id;
-        ep.postMessage(wireValue, transferables);
+        (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       finally {
         if (type === MessageType.RELEASE) {
