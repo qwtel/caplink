@@ -330,45 +330,53 @@ function isAllowedOrigin(
   return false;
 }
 
+function isOurMessage(val: unknown): val is Message {
+  return isReceiver(val) && "type" in val && "id" in val;
+}
+
 export function expose(
   obj: any,
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
-  ep.addEventListener("message", async function callback(ev) {
-    if (!ev || !ev.data) {
+  ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>) {
+    if (!ev || !ev.data || !isOurMessage(ev.data)) {
       return;
     }
     if (!isAllowedOrigin(allowedOrigins, ev.origin)) {
       console.warn(`Invalid origin '${ev.origin}' for comlink proxy`);
       return;
     }
-    ev.data.path ||= [];
-    const { id, type, path } = ev.data as Message & { path: string[] }
-    const argumentList = (ev.data.argumentList as any[] || []).map(fromWireValue, ep);
+    const { data } = ev;
+    const { id, type } = data;
     let returnValue;
     try {
-      const parent = path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
-      const rawValue = path.reduce((obj, prop) => obj[prop], obj);
       switch (type) {
         case MessageType.GET:
           {
+            const rawValue = data.path.reduce((obj, prop) => obj[prop], obj);
             returnValue = rawValue;
           }
           break;
         case MessageType.SET:
           {
-            parent[path.slice(-1)[0]] = fromWireValue.call(ep, ev.data.value);
+            const parent = data.path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
+            parent[data.path.slice(-1)[0]] = fromWireValue.call(ep, data.value);
             returnValue = true;
           }
           break;
         case MessageType.APPLY:
           {
+            const parent = data.path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
+            const rawValue = data.path.reduce((obj, prop) => obj[prop], obj);
+            const argumentList = data.argumentList.map(fromWireValue, ep);
             returnValue = rawValue.apply(parent, argumentList);
           }
           break;
         case MessageType.CONSTRUCT:
           {
+            const rawValue = data.path.reduce((obj, prop) => obj[prop], obj);
+            const argumentList = data.argumentList.map(fromWireValue, ep);
             const value = new rawValue(...argumentList);
             returnValue = proxy(value);
           }
