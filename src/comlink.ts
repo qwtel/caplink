@@ -6,7 +6,7 @@
 
 import {
   Endpoint,
-  ReceiverEndpoint,
+  MessageEventTarget,
   Message,
   MessageType,
   PostMessageWithOrigin,
@@ -669,7 +669,7 @@ export function proxy<T extends {}>(obj: T): T & ProxyMarked {
 
 export function windowEndpoint(
   w: PostMessageWithOrigin,
-  context: ReceiverEndpoint = globalThis,
+  context: MessageEventTarget = globalThis,
   targetOrigin = "*"
 ): Endpoint {
   return {
