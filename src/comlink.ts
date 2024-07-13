@@ -260,12 +260,12 @@ type SerializedThrownValue =
 
 type ResolversMap<K, V> = Map<K, Omit<PromiseWithResolvers<V>, 'promise'>>;
 
-interface EndpointMeta { 
-  readonly resolversMap: ResolversMap<MessageId, WireValue>;
+interface EndpointState { 
+  readonly resolvers: ResolversMap<MessageId, WireValue>;
   readonly messageHandler: (ev: MessageEvent<WireValue|null>) => void;
 };
 
-const endpointMeta = new WeakMap<Endpoint, EndpointMeta>;
+const endpointState = new WeakMap<Endpoint, EndpointState>;
 
 /**
  * Internal transfer handler to handle thrown exceptions.
@@ -476,18 +476,18 @@ function throwIfProxyReleased(isReleased: boolean) {
 }
 
 async function releaseEndpoint(ep: Endpoint, force = false) {
-  if (endpointMeta.has(ep)) {
-    const { resolversMap, messageHandler } = endpointMeta.get(ep)!;
+  if (endpointState.has(ep)) {
+    const { resolvers, messageHandler } = endpointState.get(ep)!;
     try {
       const releasedPromise = !force ? requestResponseMessage(ep, {
         type: MessageType.RELEASE,
       }) : null;
-      endpointMeta.delete(ep); // prevent reentry
+      endpointState.delete(ep); // prevent reentry
       await releasedPromise; // now save to await
     } finally {
       // Error all pending promises:
-      resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
-      resolversMap.clear();
+      resolvers.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
+      resolvers.clear();
       ep.removeEventListener("message", messageHandler);
       closeEndpoint(ep);
     }
@@ -730,16 +730,16 @@ function requestResponseMessage(
   transfers?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve, reject) => {
-    let resolversMap = endpointMeta.get(ep)?.resolversMap;
-    if (!resolversMap) {
-      resolversMap = new Map();
-      const messageHandler = makeMessageHandler(resolversMap);
-      endpointMeta.set(ep, { resolversMap, messageHandler });
+    let resolvers = endpointState.get(ep)?.resolvers;
+    if (!resolvers) {
+      resolvers = new Map();
+      const messageHandler = makeMessageHandler(resolvers);
+      endpointState.set(ep, { resolvers, messageHandler });
       ep.addEventListener("message", messageHandler);
     }
     const id = generateId();
     msg.id = id;
-    resolversMap.set(id, { resolve, reject });
+    resolvers.set(id, { resolve, reject });
     ep.start?.();
     ep.postMessage(msg, transfers);
   });
