@@ -258,7 +258,7 @@ type SerializedThrownValue =
   | { isError: true; value: Error }
   | { isError: false; value: unknown };
 
-type ResolversMap<K, V> = Map<K, { resolve: (value: MaybePromise<V>) => void, reject: (err: any) => void }>;
+type ResolversMap<K, V> = Map<K, Omit<PromiseWithResolvers<V>, 'promise'>>;
 
 interface EndpointMeta { 
   readonly resolversMap: ResolversMap<MessageId, WireValue>;
@@ -478,15 +478,19 @@ function throwIfProxyReleased(isReleased: boolean) {
 async function releaseEndpoint(ep: Endpoint, force = false) {
   if (endpointMeta.has(ep)) {
     const { resolversMap, messageHandler } = endpointMeta.get(ep)!;
-    const releasedPromise = !force ? requestResponseMessage(ep, {
-      type: MessageType.RELEASE,
-    }) : null;
-    endpointMeta.delete(ep); // prevent reentry
-    await releasedPromise?.catch(() => {});
-    resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
-    resolversMap.clear();
-    ep.removeEventListener("message", messageHandler);
-    closeEndpoint(ep);
+    try {
+      const releasedPromise = !force ? requestResponseMessage(ep, {
+        type: MessageType.RELEASE,
+      }) : null;
+      endpointMeta.delete(ep); // prevent reentry
+      await releasedPromise; // now save to await
+    } finally {
+      // Error all pending promises:
+      resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
+      resolversMap.clear();
+      ep.removeEventListener("message", messageHandler);
+      closeEndpoint(ep);
+    }
   }
 }
 
