@@ -332,7 +332,26 @@ function isOurMessage(val: unknown): val is Message {
   return isReceiver(val) && "type" in val && "id" in val;
 }
 
+/** Keeping track of how many times an object was exposed. */
 const objectCounter = new WeakMap<object, number>();
+
+/** Decrease an exposed objects's ref counter and potentially run its cleanup code. */
+async function releaseObject(obj: any) {
+  const newCount = (objectCounter.get(obj) || 0) - 1;
+  objectCounter.set(obj, newCount);
+  if (newCount === 0) {
+    // Run finalizers before sending message so caller can be sure that resources are freed up
+    if ('dispose' in Symbol && Symbol.dispose in obj) {
+      obj[Symbol.dispose]();
+    }
+    if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
+      await obj[Symbol.asyncDispose]();
+    }
+    if (finalizer in obj && typeof obj[finalizer] === "function") {
+      obj[finalizer]();
+    }
+  }
+}
 
 export function expose(
   object: object,
@@ -393,20 +412,7 @@ export function expose(
         case MessageType.RELEASE:
           {
             returnValue = undefined;
-            const newCount = (objectCounter.get(obj) || 0) - 1;
-            objectCounter.set(obj, newCount);
-            if (newCount === 0) {
-              // Run finalizers before sending message so caller can be sure that resources are freed up
-              if ('dispose' in Symbol && Symbol.dispose in obj) {
-                obj[Symbol.dispose]();
-              }
-              if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
-                await obj[Symbol.asyncDispose]();
-              }
-              if (finalizer in obj && typeof obj[finalizer] === "function") {
-                obj[finalizer]();
-              }
-            }
+            releaseObject(obj);
           }
           break;
         default:
@@ -445,6 +451,9 @@ export function expose(
       }
     }
   });
+  // If the endpoint gets closed on us without a release message, we treat it the same as a release message to not prevent resource cleanup.
+  ep.addEventListener('close', () => releaseObject(object));
+  ep.addEventListener('error', () => releaseObject(object));
   ep.start?.();
 }
 
@@ -466,15 +475,15 @@ function throwIfProxyReleased(isReleased: boolean) {
   }
 }
 
-async function releaseEndpoint(ep: Endpoint) {
+async function releaseEndpoint(ep: Endpoint, force = false) {
   if (endpointMeta.has(ep)) {
     const { resolversMap, messageHandler } = endpointMeta.get(ep)!;
-    const releasedPromise = requestResponseMessage(ep, {
+    const releasedPromise = !force ? requestResponseMessage(ep, {
       type: MessageType.RELEASE,
-    });
+    }) : null;
     endpointMeta.delete(ep); // prevent reentry
-    await releasedPromise.catch(() => {});
-    resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled by proxy release', 'AbortError')))
+    await releasedPromise?.catch(() => {});
+    resolversMap.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
     resolversMap.clear();
     ep.removeEventListener("message", messageHandler);
     closeEndpoint(ep);
@@ -517,8 +526,7 @@ function createProxy<T>(
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          // Can't await result in sync disposal. Error will be reported as unhandled promise rejection
-          releaseEndpoint(ep)
+          releaseEndpoint(ep) // Can't await result in sync disposal. Error will be reported as unhandled promise rejection
         };
       }
       if (prop === Symbol.asyncDispose) {
@@ -612,6 +620,24 @@ function createProxy<T>(
       );
     }
   });
+
+  // If the endpoint gets closed on us, we should mark the proxy as released and reject all pending promises.
+  // This shouldn't really happen since the proxy must be closed from this side, either through manual dispose or finalization registry.
+  // Also note that support for the `close` event is unclear (MDN doesn't document it, spec says it should be there...), so this is a last resort.
+  ep.addEventListener("close", async () => {
+    isProxyReleased = true;
+    unregisterProxy(proxy);
+    // Passing the force flag to skip sending a release message, since the endpoint is already closed.
+    await releaseEndpoint(ep, true);
+  });
+
+  // Similarly, if the endpoint errors for any reason, we should mark the proxy as released and reject all pending promises.
+  ep.addEventListener("error", async () => {
+    isProxyReleased = true;
+    unregisterProxy(proxy);
+    await releaseEndpoint(ep, true);
+  });
+
   registerProxy(proxy, ep);
   return proxy as any;
 }
