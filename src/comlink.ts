@@ -15,7 +15,7 @@ import {
   MessageId,
   messageChannel,
   toNative,
-  adaptNative,
+  adoptNative,
 } from "./protocol";
 export type { Endpoint };
 
@@ -25,7 +25,7 @@ export const createEndpoint = Symbol("Comlink.endpoint");
 export const releaseProxy = Symbol("Comlink.releaseProxy");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const finalizer = Symbol("Comlink.finalizer");
-export { messageChannel, toNative, adaptNative };
+export { messageChannel, toNative, adoptNative };
 
 const throwMarker = Symbol("Comlink.thrown");
 
@@ -234,8 +234,8 @@ const proxyTransferHandler = {
       port = obj[createEndpoint]();
       if (isNativeEndpoint(ep) && isNativeConvertible(port)) {
         port = port[toNative]();
-      } else if (ep[adaptNative] && isNativeEndpoint(port)) {
-        port = ep[adaptNative](port);
+      } else if (ep[adoptNative] && isNativeEndpoint(port)) {
+        port = ep[adoptNative](port);
       }
     } else {
       const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
