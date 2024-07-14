@@ -379,7 +379,6 @@ export function expose(
           break;
         case MessageType.ENDPOINT:
           {
-            if (data.value !== ev.ports[0]) throw new Error("Assertion error"); // XXX: delete me
             expose(obj, data.value);
             returnValue = undefined;
           }
