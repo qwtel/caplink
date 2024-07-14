@@ -570,6 +570,15 @@ function createProxy<T>(
       if (last === "bind") {
         return createProxy(ep, path.slice(0, -1));
       }
+      // Pretending that `call()` and `apply()` didn’t happen either
+      if (last === "call") {
+        path = path.slice(0, -1);
+        rawArgumentList = rawArgumentList.slice(1);
+      }
+      if (last === "apply") {
+        path = path.slice(0, -1);
+        rawArgumentList = rawArgumentList[1];
+      }
       const [argumentList, transferables] = processTuple(rawArgumentList, ep);
       return requestResponseMessage(
         ep,
