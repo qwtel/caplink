@@ -727,11 +727,11 @@ function requestResponseMessage(
       const messageHandler = makeMessageHandler(resolvers);
       endpointState.set(ep, { resolvers, messageHandler });
       ep.addEventListener("message", messageHandler);
+      ep.start?.();
     }
     const id = generateId();
     msg.id = id;
     resolvers.set(id, { resolve, reject });
-    ep.start?.();
     ep.postMessage(msg, transfers);
   });
 }
