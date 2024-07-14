@@ -254,9 +254,6 @@ interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
   value: unknown;
 }
-type SerializedThrownValue =
-  | { isError: true; value: Error }
-  | { isError: false; value: unknown };
 
 type ResolversMap<K, V> = Map<K, Omit<PromiseWithResolvers<V>, 'promise'>>;
 
@@ -270,37 +267,15 @@ const endpointState = new WeakMap<Endpoint, EndpointState>;
 /**
  * Internal transfer handler to handle thrown exceptions.
  */
-const throwTransferHandler: TransferHandler<
-  ThrownValue,
-  SerializedThrownValue
-> = {
+const throwTransferHandler = {
   canHandle: (value): value is ThrownValue => isReceiver(value) && throwMarker in value,
   serialize({ value }) {
-    let serialized: SerializedThrownValue;
-    if (value instanceof Error) {
-      serialized = {
-        isError: true,
-        value: {
-          message: value.message,
-          name: value.name,
-          stack: value.stack,
-        },
-      };
-    } else {
-      serialized = { isError: false, value };
-    }
-    return [serialized, []];
+    return [value, []];
   },
-  deserialize(serialized) {
-    if (serialized.isError) {
-      throw Object.assign(
-        new Error(serialized.value.message),
-        serialized.value
-      );
-    }
-    throw serialized.value;
+  deserialize(value: unknown) {
+    throw value;
   },
-};
+} satisfies TransferHandler<ThrownValue, any>;
 
 /**
  * Allows customizing the serialization of certain values.
