@@ -446,14 +446,22 @@ export function expose(
         if (type === MessageType.RELEASE) {
           // detach and deactivate after sending release response above.
           ep.removeEventListener("message", callback);
+          ep.removeEventListener("close", listener);
+          ep.removeEventListener("error", listener);
           closeEndpoint(ep);
         }
       }
     }
   });
-  // If the endpoint gets closed on us without a release message, we treat it the same as a release message to not prevent resource cleanup.
-  ep.addEventListener('close', () => releaseObject(object));
-  ep.addEventListener('error', () => releaseObject(object));
+  // If the endpoint gets closed on us without a release message, we treat it the same so as not to prevent resource cleanup.
+  // At most one of close and error should be handled so as not to falsify the object count.
+  const listener = () => {
+    finalizeObject(object);
+    ep.removeEventListener("close", listener);
+    ep.removeEventListener("error", listener);
+  };
+  ep.addEventListener('close', listener);
+  ep.addEventListener('error', listener);
   ep.start?.();
 }
 
