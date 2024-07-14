@@ -336,7 +336,7 @@ function isOurMessage(val: unknown): val is Message {
 const objectCounter = new WeakMap<object, number>();
 
 /** Decrease an exposed objects's ref counter and potentially run its cleanup code. */
-async function releaseObject(obj: any) {
+async function finalizeObject(obj: any) {
   const newCount = (objectCounter.get(obj) || 0) - 1;
   objectCounter.set(obj, newCount);
   if (newCount === 0) {
@@ -412,7 +412,7 @@ export function expose(
         case MessageType.RELEASE:
           {
             returnValue = undefined;
-            releaseObject(obj);
+            finalizeObject(obj);
           }
           break;
         default:
