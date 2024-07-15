@@ -329,11 +329,14 @@ async function finalizeObject(obj: any) {
   }
 }
 
+const locked = new WeakSet<Endpoint>
 export function expose(
   object: object,
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
+  if (locked.has(ep)) throw Error("Endpoint is already exposing another object and cannot be reused.");
+  locked.add(ep);
   objectCounter.set(object, (objectCounter.get(object) || 0) + 1);
   ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>) {
     const obj = object as any;
