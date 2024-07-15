@@ -211,8 +211,6 @@ const isReceiver = (val: unknown): val is {} =>
 
 type TransferableTuple<T> = [value: T, transfer: Transferable[]];
 
-type Rec<T> = Record<PropertyKey, T>
-
 /**
  * Customizes the serialization of certain values as determined by `canHandle()`.
  *
@@ -283,10 +281,10 @@ const tupleTransferHandler = {
 } satisfies TransferHandler<any[], WireValue[]>;
 
 const recordTransferHandler = {
-  canHandle: (val): val is Rec<any> => isReceiver(val) && (val as RecordMarked)[recordMarker],
+  canHandle: (val): val is Record<PropertyKey, any> => isReceiver(val) && (val as RecordMarked)[recordMarker],
   serialize: (val, ep) => processRecord(val, ep),
   deserialize: (val, ep) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue.call(ep, val[k]); return ret }
-} satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
+} satisfies TransferHandler<Record<PropertyKey, any>, Record<PropertyKey, WireValue>>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -685,9 +683,9 @@ function processTuple(argumentList: any[], ep: Endpoint): TransferableTuple<Wire
   return [processed.map((v) => v[0]), flatten(processed.map((v) => v[1]))];
 }
 
-function processRecord(argumentRec: Rec<any>, ep: Endpoint): TransferableTuple<Rec<WireValue>> {
+function processRecord(argumentRec: Record<PropertyKey, any>, ep: Endpoint): TransferableTuple<Record<PropertyKey, WireValue>> {
   const transferables = new Array<Transferable>();
-  const obj = {} as Rec<WireValue>;
+  const obj = {} as Record<PropertyKey, WireValue>;
   for (const key in argumentRec) {
     const [v, ts] = toWireValue.call(ep, argumentRec[key]);
     obj[key] = v;
