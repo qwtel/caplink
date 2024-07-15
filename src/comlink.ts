@@ -20,6 +20,8 @@ import {
 export type { Endpoint, MessageEventTarget, PostMessageWithOrigin };
 
 export const proxyMarker = Symbol("Comlink.proxy");
+export const tupleMarker = Symbol("Comlink.tuple")
+export const recordMarker = Symbol("Comlink.record")
 export const createEndpoint = Symbol("Comlink.endpoint");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Comlink.releaseProxy");
@@ -37,6 +39,17 @@ export interface ProxyMarked {
   [proxyMarker]: true;
 }
 
+export interface TupleMarked {
+  [tupleMarker]: true;
+}
+
+export interface RecordMarked {
+  [recordMarker]: true;
+}
+
+type TupleOrRecordMarked = TupleMarked|RecordMarked;
+type TupleOrRecordMarker = typeof tupleMarker|typeof recordMarker;
+
 /**
  * Interface for our own proxy objects. The defining characteristic is the ability to get the underlying message port.
  */
@@ -52,6 +65,10 @@ interface Proxy {
  */
 type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
 
+type Asyncify<T> = T extends TupleOrRecordMarked
+  ? Promise<{ [P in keyof T as Exclude<P, TupleOrRecordMarker>]: T[P] }>
+  : Promisify<T>;
+
 /**
  * Takes the raw type of a remote property and returns the type that is visible to the local thread on the proxy.
  *
@@ -62,7 +79,7 @@ type RemoteProperty<T> =
   // If the value is a function, comlink will proxy it automatically.
   // Objects are only proxied if they are marked to be proxied.
   // Otherwise, the property is converted to a Promise that resolves the cloned value.
-  T extends Function | ProxyMarked ? Remote<T> : Promisify<T>;
+  T extends Function | ProxyMarked ? Remote<T> : Asyncify<T>;
 
 /**
  * Takes the raw type of a property as a remote thread would see it through a proxy (e.g. when passed in as a function
@@ -80,15 +97,21 @@ type LocalProperty<T> = T extends Function | ProxyMarked
 /**
  * Proxies `T` if it is a `ProxyMarked`, clones it otherwise (as handled by structured cloning and transfer handlers).
  */
-export type ProxyOrClone<T> = T extends ProxyMarked ? Remote<T> : T;
+export type ProxyOrClone<T> = T extends TupleOrRecordMarked 
+  ? { [P in keyof T]: ProxyOrClone<T[P]> }
+  : T extends ProxyMarked 
+    ? Remote<T> 
+    : T;
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
 export type UnproxyOrClone<T> = T extends Remote<infer U>
   ? U & ProxyMarked | Remote<U>
-  : T extends RemoteObject<ProxyMarked>
-  ? Local<T>
-  : T;
+  : T extends RemoteObject<TupleOrRecordMarked>
+    ? { [P in keyof T]: UnproxyOrClone<T[P]> }
+    : T extends RemoteObject<ProxyMarked>
+      ? Local<T>
+      : T;
 
 /**
  * Takes the raw type of a remote object in the other thread and returns the type as it is visible to the local thread
@@ -133,7 +156,7 @@ export type Remote<T> =
     (T extends (...args: infer TArguments) => infer TReturn
       ? (
           ...args: { [I in keyof TArguments]: UnproxyOrClone<TArguments[I]> }
-        ) => Promisify<ProxyOrClone<Awaited<TReturn>>>
+        ) => Asyncify<ProxyOrClone<Awaited<TReturn>>>
       : unknown) &
     // Handle construct signature (if present)
     // The return of construct signatures is always proxied (whether marked or not)
@@ -143,7 +166,7 @@ export type Remote<T> =
             ...args: {
               [I in keyof TArguments]: UnproxyOrClone<TArguments[I]>;
             }
-          ): Promisify<Remote<TInstance>>;
+          ): Asyncify<Remote<TInstance>>;
         }
       : unknown) &
     // Include additional special comlink methods available on the proxy.
@@ -187,6 +210,8 @@ const isReceiver = (val: unknown): val is {} =>
   (typeof val === "object" && val !== null) || typeof val === "function";
 
 type TransferableTuple<T> = [value: T, transfer: Transferable[]];
+
+type Rec<T> = Record<PropertyKey, T>
 
 /**
  * Customizes the serialization of certain values as determined by `canHandle()`.
@@ -251,6 +276,18 @@ const proxyTransferHandler = {
   },
 } satisfies TransferHandler<Proxy|ProxyMarked, MessagePort>;
 
+const tupleTransferHandler = {
+  canHandle: (val): val is any[] => Array.isArray(val) && (val as any[] & TupleMarked)[tupleMarker],
+  serialize: (val, ep) => processTuple(val, ep),
+  deserialize: (val) => val.map(fromWireValue)
+} satisfies TransferHandler<any[], WireValue[]>;
+
+const recordTransferHandler = {
+  canHandle: (val): val is Rec<any> => isReceiver(val) && (val as RecordMarked)[recordMarker],
+  serialize: (val, ep) => processRecord(val, ep),
+  deserialize: (val, ep) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue.call(ep, val[k]); return ret }
+} satisfies TransferHandler<Rec<any>, Rec<WireValue>>;
+
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
   value: unknown;
@@ -287,6 +324,8 @@ export const transferHandlers = new Map<
 >([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
+  ["tuple", tupleTransferHandler],
+  ["record", recordTransferHandler],
 ]);
 
 function isAllowedOrigin(
@@ -332,7 +371,7 @@ async function finalizeObject(obj: any) {
 export function expose(
   object: object,
   ep: Endpoint = globalThis as any,
-  allowedOrigins: (string | RegExp)[] = ["*"]
+  allowedOrigins: (string | RegExp)[] = ["*"],
 ) {
   objectCounter.set(object, (objectCounter.get(object) || 0) + 1);
   ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>) {
@@ -527,10 +566,10 @@ function createProxy<T>(
         if (path.length === 0) {
           return { then: () => proxy };
         }
-        const r = requestResponseMessage(ep, {
+        const r = requestResponseWireValue(ep, {
           type: MessageType.GET,
           path: path.map((p) => p.toString()),
-        }).then(fromWireValue.bind(ep));
+        });
         return r.then.bind(r);
       }
       return createProxy(ep, [...path, prop]);
@@ -540,7 +579,7 @@ function createProxy<T>(
       // FIXME: ES6 Proxy Handler `set` methods are supposed to return a
       // boolean. To show good will, we return true asynchronously ¯\_(ツ)_/¯
       const [value, transfer] = toWireValue.call(ep, rawValue);
-      return requestResponseMessage(
+      return requestResponseWireValue(
         ep,
         {
           type: MessageType.SET,
@@ -548,14 +587,14 @@ function createProxy<T>(
           value,
         },
         transfer
-      ).then(fromWireValue.bind(ep)) as any;
+      ) as any;
     },
     apply(_target, _thisArg, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const last = path[path.length - 1];
       if (last === createEndpoint) {
         const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
-        requestResponseMessage(ep, {
+        requestResponseWireValue(ep, {
           type: MessageType.ENDPOINT,
           value: port2,
         }, [port2]).catch(() => {
@@ -580,7 +619,7 @@ function createProxy<T>(
         rawArgumentList = rawArgumentList[1];
       }
       const [argumentList, transfer] = processTuple(rawArgumentList, ep);
-      return requestResponseMessage(
+      return requestResponseWireValue(
         ep,
         {
           type: MessageType.APPLY,
@@ -588,12 +627,12 @@ function createProxy<T>(
           argumentList,
         },
         transfer
-      ).then(fromWireValue.bind(ep));
+      );
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
       const [argumentList, transfer] = processTuple(rawArgumentList, ep);
-      return requestResponseMessage(
+      return requestResponseWireValue(
         ep,
         {
           type: MessageType.CONSTRUCT,
@@ -601,7 +640,7 @@ function createProxy<T>(
           argumentList,
         },
         transfer
-      ).then(fromWireValue.bind(ep));
+      );
     },
     has(_target, prop) {
       throwIfProxyReleased(isProxyReleased);
@@ -646,6 +685,17 @@ function processTuple(argumentList: any[], ep: Endpoint): TransferableTuple<Wire
   return [processed.map((v) => v[0]), flatten(processed.map((v) => v[1]))];
 }
 
+function processRecord(argumentRec: Rec<any>, ep: Endpoint): TransferableTuple<Rec<WireValue>> {
+  const transferables = new Array<Transferable>();
+  const obj = {} as Rec<WireValue>;
+  for (const key in argumentRec) {
+    const [v, ts] = toWireValue.call(ep, argumentRec[key]);
+    obj[key] = v;
+    if (ts) transferables.push(...ts);
+  }
+  return [obj, transferables];
+}
+
 const transferCache = new WeakMap<any, Transferable[]>();
 export function transfer<T>(obj: T, transfers: Transferable[]): T {
   transferCache.set(obj, transfers);
@@ -655,6 +705,18 @@ export function transfer<T>(obj: T, transfers: Transferable[]): T {
 export function proxy<T extends {}>(obj: T): T & ProxyMarked {
   const n = obj as T & ProxyMarked;
   n[proxyMarker] = true;
+  return n;
+}
+
+export function tuple<T extends {}>(obj: T): T & TupleMarked {
+  const n = obj as T & TupleMarked;
+  n[tupleMarker] = true;
+  return n;
+}
+
+export function record<T extends {}>(obj: T): T & RecordMarked {
+  const n = obj as T & RecordMarked;
+  n[recordMarker] = true;
   return n;
 }
 
@@ -734,6 +796,14 @@ function requestResponseMessage(
     resolvers.set(id, { resolve, reject });
     ep.postMessage(msg, transfer);
   });
+}
+
+function requestResponseWireValue(
+  ep: Endpoint,
+  msg: Message,
+  transfers?: Transferable[]
+): Promise<any> {
+  return requestResponseMessage(ep, msg, transfers).then(fromWireValue.bind(ep));
 }
 
 function generateId(): MessageId {
