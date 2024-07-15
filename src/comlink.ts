@@ -277,7 +277,7 @@ const proxyTransferHandler = {
 const tupleTransferHandler = {
   canHandle: (val): val is any[] => Array.isArray(val) && (val as any[] & TupleMarked)[tupleMarker],
   serialize: (val, ep) => processTuple(val, ep),
-  deserialize: (val) => val.map(fromWireValue)
+  deserialize: (val, ep) => val.map(fromWireValue, ep)
 } satisfies TransferHandler<any[], WireValue[]>;
 
 const recordTransferHandler = {
