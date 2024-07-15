@@ -687,14 +687,14 @@ function processTuple(argumentList: any[], ep: Endpoint): TransferableTuple<Wire
 }
 
 function processRecord(argumentRec: Record<PropertyKey, any>, ep: Endpoint): TransferableTuple<Record<PropertyKey, WireValue>> {
-  const transferables = new Array<Transferable>();
+  const transfer = new Array<Transferable>();
   const obj = {} as Record<PropertyKey, WireValue>;
   for (const key in argumentRec) {
     const [v, ts] = toWireValue.call(ep, argumentRec[key]);
     obj[key] = v;
-    if (ts) transferables.push(...ts);
+    if (ts) transfer.push(...ts);
   }
-  return [obj, transferables];
+  return [obj, transfer];
 }
 
 const transferCache = new WeakMap<any, Transferable[]>();
