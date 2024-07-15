@@ -48,11 +48,11 @@ const fn = async () => {
   // for await (const value of cgen) console.log("RECVD", { value })
 }
 
-// await fn();
-// w.terminate();
+await fn();
+w.terminate();
 
-Deno.test({
-  name: "test",
-  fn,
-})
+// Deno.test({
+//   name: "test",
+//   fn,
+// })
 

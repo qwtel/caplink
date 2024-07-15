@@ -7,7 +7,9 @@ function *gen() {
 }
 
 export const fns = {
-  gen,
+  *gen() {
+    yield* gen();
+  },
   record() {
     return Comlink.record({
       prop: 'Hello',
@@ -19,6 +21,9 @@ export const fns = {
   },
   customGen(): CustomGenerator<string> {
     throw Error("Not implemented")
+  },
+  [Symbol.for('foo')]() {
+    return true;
   }
 }
 

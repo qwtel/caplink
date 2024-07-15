@@ -808,43 +808,10 @@ function requestResponseMessage(
   });
 }
 
-/** A custom promise that traps calls to async generator functions and applies them once the promise is resolved. */
-// FIXME: Should this be a proxy instead that does this for all methods, other than `then`, `catch`, and `finally`?
-class ForwardAsyncGeneratorPromise<T> implements Promise<T> {
-  constructor(private promise: Promise<T>) { }
-  then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined): Promise<TResult1 | TResult2> {
-    return this.promise.then(onfulfilled, onrejected)
-  }
-  catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null | undefined): Promise<T | TResult> {
-    return this.promise.catch(onrejected)
-  }
-  finally(onfinally?: (() => void) | null | undefined): Promise<T> {
-    return this.promise.finally(onfinally)
-  }
-  get [Symbol.toStringTag]() {
-    return "ForwardAsyncGeneratorPromise"
-  };
-  async next(x: any) {
-    return (<any>await this.promise).next(x);
-  }
-  async return(x: any) {
-    return (<any>await this.promise).return(x);
-  }
-  async throw(x: any) {
-    return (<any>await this.promise).throw(x);
-  }
-  [Symbol.asyncIterator]() {
-    return this;
-  }
-  async [Symbol.asyncDispose]() {
-    return (<any>await this.promise)[Symbol.asyncDispose]();
-  }
-}
-
 function requestResponseWireValue(
   ep: Endpoint,
   msg: Message,
   transfers?: Transferable[]
 ): Promise<any> {
-  return new ForwardAsyncGeneratorPromise(requestResponseMessage(ep, msg, transfers).then(fromWireValue));
+  return requestResponseMessage(ep, msg, transfers).then(fromWireValue);
 }
