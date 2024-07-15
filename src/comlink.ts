@@ -206,8 +206,11 @@ export type Local<T> =
         }
       : unknown);
 
-const isReceiver = (val: unknown): val is {} =>
+/** "Receiver" as in JS property receiver. Any JS value than can have properties */
+const isReceiver = (val: unknown): val is {} => 
   (typeof val === "object" && val !== null) || typeof val === "function";
+const isObject = (val: unknown): val is {} => 
+  (typeof val === "object" && val !== null)
 
 type TransferableTuple<T> = [value: T, transfer: Transferable[]];
 
@@ -275,13 +278,13 @@ const proxyTransferHandler = {
 } satisfies TransferHandler<Proxy|ProxyMarked, MessagePort>;
 
 const tupleTransferHandler = {
-  canHandle: (val): val is any[] => Array.isArray(val) && (val as any[] & TupleMarked)[tupleMarker],
+  canHandle: (val): val is any[] => Array.isArray(val) && tupleMarker in val,
   serialize: (val, ep) => processTuple(val, ep),
   deserialize: (val, ep) => val.map(fromWireValue, ep)
 } satisfies TransferHandler<any[], WireValue[]>;
 
 const recordTransferHandler = {
-  canHandle: (val): val is Record<PropertyKey, any> => isReceiver(val) && (val as RecordMarked)[recordMarker],
+  canHandle: (val): val is Record<PropertyKey, any> => isObject(val) && recordMarker in val,
   serialize: (val, ep) => processRecord(val, ep),
   deserialize: (val, ep) => { const ret = {} as any; for (const k in val) ret[k] = fromWireValue.call(ep, val[k]); return ret }
 } satisfies TransferHandler<Record<PropertyKey, any>, Record<PropertyKey, WireValue>>;
