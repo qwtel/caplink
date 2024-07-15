@@ -17,11 +17,11 @@ import {
   toNative,
   adoptNative,
 } from "./protocol";
-export type { Endpoint };
+export type { Endpoint, MessageEventTarget, PostMessageWithOrigin };
 
 export const proxyMarker = Symbol("Comlink.proxy");
 export const createEndpoint = Symbol("Comlink.endpoint");
-/** @deprecated Use `Symbol.asyncDispose` instead */
+/** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Comlink.releaseProxy");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const finalizer = Symbol("Comlink.finalizer");
@@ -59,7 +59,7 @@ type Promisify<T> = T extends PromiseLike<unknown> ? T : Promise<T>;
  * See https://www.typescriptlang.org/docs/handbook/advanced-types.html#distributive-conditional-types
  */
 type RemoteProperty<T> =
-  // If the value is a method, comlink will proxy it automatically.
+  // If the value is a function, comlink will proxy it automatically.
   // Objects are only proxied if they are marked to be proxied.
   // Otherwise, the property is converted to a Promise that resolves the cloned value.
   T extends Function | ProxyMarked ? Remote<T> : Promisify<T>;
@@ -84,7 +84,9 @@ export type ProxyOrClone<T> = T extends ProxyMarked ? Remote<T> : T;
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
-export type UnproxyOrClone<T> = T extends RemoteObject<ProxyMarked>
+export type UnproxyOrClone<T> = T extends Remote<infer U>
+  ? U & ProxyMarked | Remote<U>
+  : T extends RemoteObject<ProxyMarked>
   ? Local<T>
   : T;
 
@@ -116,7 +118,7 @@ export interface ProxyMethods {
   [createEndpoint]: () => MessagePort;
   [Symbol.dispose]: () => void;
   [Symbol.asyncDispose]: () => Promise<void>;
-  /** @deprecated Use `Symbol.asyncDispose` instead */
+  /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
   [releaseProxy]: () => Promise<void>;
 }
 
@@ -152,7 +154,6 @@ export type Remote<T> =
  */
 type MaybePromise<T> = PromiseLike<T> | T;
 
-
 /**
  * Takes the raw type of a remote object, function or class as a remote thread would see it through a proxy (e.g. when
  * passed in as a function argument) and returns the type the local thread has to supply.
@@ -185,7 +186,7 @@ export type Local<T> =
 const isReceiver = (val: unknown): val is {} =>
   (typeof val === "object" && val !== null) || typeof val === "function";
 
-type TransferableTuple<T> = [value: T, transferables: Transferable[]];
+type TransferableTuple<T> = [value: T, transfer: Transferable[]];
 
 /**
  * Customizes the serialization of certain values as determined by `canHandle()`.
@@ -538,7 +539,7 @@ function createProxy<T>(
       throwIfProxyReleased(isProxyReleased);
       // FIXME: ES6 Proxy Handler `set` methods are supposed to return a
       // boolean. To show good will, we return true asynchronously ¯\_(ツ)_/¯
-      const [value, transferables] = toWireValue.call(ep, rawValue);
+      const [value, transfer] = toWireValue.call(ep, rawValue);
       return requestResponseMessage(
         ep,
         {
@@ -546,7 +547,7 @@ function createProxy<T>(
           path: [...path, prop].map((p) => p.toString()),
           value,
         },
-        transferables
+        transfer
       ).then(fromWireValue.bind(ep)) as any;
     },
     apply(_target, _thisArg, rawArgumentList) {
@@ -578,7 +579,7 @@ function createProxy<T>(
         path = path.slice(0, -1);
         rawArgumentList = rawArgumentList[1];
       }
-      const [argumentList, transferables] = processTuple(rawArgumentList, ep);
+      const [argumentList, transfer] = processTuple(rawArgumentList, ep);
       return requestResponseMessage(
         ep,
         {
@@ -586,12 +587,12 @@ function createProxy<T>(
           path: path.map((p) => p.toString()),
           argumentList,
         },
-        transferables
+        transfer
       ).then(fromWireValue.bind(ep));
     },
     construct(_target, rawArgumentList) {
       throwIfProxyReleased(isProxyReleased);
-      const [argumentList, transferables] = processTuple(rawArgumentList, ep);
+      const [argumentList, transfer] = processTuple(rawArgumentList, ep);
       return requestResponseMessage(
         ep,
         {
@@ -599,7 +600,7 @@ function createProxy<T>(
           path: path.map((p) => p.toString()),
           argumentList,
         },
-        transferables
+        transfer
       ).then(fromWireValue.bind(ep));
     },
     has(_target, prop) {
@@ -610,8 +611,7 @@ function createProxy<T>(
         prop === releaseProxy ||
         prop === Symbol.asyncDispose ||
         prop === createEndpoint ||
-        prop === "then" ||
-        prop === "bind"
+        prop === "then"
       );
     }
   });
@@ -664,7 +664,7 @@ export function windowEndpoint(
   targetOrigin = "*"
 ): Endpoint {
   return {
-    postMessage: (msg: any, transferables: Transferable[]) => w.postMessage(msg, targetOrigin, transferables),
+    postMessage: (msg: any, transfer: Transferable[]) => w.postMessage(msg, targetOrigin, transfer),
     addEventListener: context.addEventListener.bind(context),
     removeEventListener: context.removeEventListener.bind(context),
   };
@@ -673,14 +673,14 @@ export function windowEndpoint(
 function toWireValue(this: Endpoint, value: any): TransferableTuple<WireValue> {
   for (const [name, handler] of transferHandlers) {
     if (handler.canHandle(value, this)) {
-      const [serializedValue, transferables] = handler.serialize(value, this);
+      const [serializedValue, transfer] = handler.serialize(value, this);
       return [
         {
           type: WireValueType.HANDLER,
           name,
           value: serializedValue,
         },
-        transferables,
+        transfer,
       ];
     }
   }
@@ -718,7 +718,7 @@ const makeMessageHandler = (resolverMap: ResolversMap<MessageId, WireValue>) => 
 function requestResponseMessage(
   ep: Endpoint,
   msg: Message,
-  transfers?: Transferable[]
+  transfer?: Transferable[]
 ): Promise<WireValue> {
   return new Promise((resolve, reject) => {
     let resolvers = endpointState.get(ep)?.resolvers;
@@ -732,7 +732,7 @@ function requestResponseMessage(
     const id = generateId();
     msg.id = id;
     resolvers.set(id, { resolve, reject });
-    ep.postMessage(msg, transfers);
+    ep.postMessage(msg, transfer);
   });
 }
 
