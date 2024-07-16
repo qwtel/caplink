@@ -98,7 +98,7 @@ export type UnproxyOrClone<T> = T extends Remote<infer U>
  *
  * @template T The raw type of a remote object as seen in the other thread.
  */
-export type RemoteObject<T> = { [P in keyof T]: RemoteProperty<T[P]> };
+export type RemoteObject<T> = { [P in keyof T as Exclude<P, symbol>]: RemoteProperty<T[P]> };
 /**
  * Takes the type of an object as a remote thread would see it through a proxy (e.g. when passed in as a function
  * argument) and returns the type that the local thread has to supply.
