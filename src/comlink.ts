@@ -183,7 +183,8 @@ export type Local<T> =
         }
       : unknown);
 
-const isReceiver = (val: unknown): val is {} =>
+const isObject = (val: unknown): val is object => typeof val === "object" && val !== null;
+const isReceiver = (val: unknown): val is object|Function =>
   (typeof val === "object" && val !== null) || typeof val === "function";
 
 type TransferableTuple<T> = [value: T, transfer: Transferable[]];
@@ -194,13 +195,13 @@ type TransferableTuple<T> = [value: T, transfer: Transferable[]];
  * @template T The input type being handled by this transfer handler.
  * @template S The serialized type sent over the wire.
  */
-export interface TransferHandler<T, S> {
+export interface TransferHandler<T extends object|Function, S> {
   /**
    * Gets called for every value to determine whether this transfer handler
    * should serialize the value, which includes checking that it is of the right
    * type (but can perform checks beyond that as well).
    */
-  canHandle(value: unknown, ep: Endpoint): value is T;
+  canHandle(value: object|Function, ep: Endpoint): value is T;
 
   /**
    * Gets called with the value if `canHandle()` returned `true` to produce a
@@ -228,7 +229,7 @@ const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => 
  * Internal transfer handle to handle objects marked to proxy.
  */
 const proxyTransferHandler = {
-  canHandle: (val): val is Proxy|ProxyMarked => isReceiver(val) && (proxyMarker in val || createEndpoint in val),
+  canHandle: (val): val is Proxy|ProxyMarked => proxyMarker in val || createEndpoint in val,
   serialize(obj, ep) {
     let port;
     if (createEndpoint in obj) {
@@ -269,7 +270,7 @@ const endpointState = new WeakMap<Endpoint, EndpointState>;
  * Internal transfer handler to handle thrown exceptions.
  */
 const throwTransferHandler = {
-  canHandle: (value): value is ThrownValue => isReceiver(value) && throwMarker in value,
+  canHandle: (value): value is ThrownValue => throwMarker in value,
   serialize({ value }) {
     return [value, []];
   },
@@ -283,7 +284,7 @@ const throwTransferHandler = {
  */
 export const transferHandlers = new Map<
   string,
-  TransferHandler<unknown, unknown>
+  TransferHandler<object|Function, unknown>
 >([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
@@ -305,7 +306,7 @@ function isAllowedOrigin(
 }
 
 function isOurMessage(val: unknown): val is Message {
-  return isReceiver(val) && "type" in val && "id" in val;
+  return isObject(val) && "type" in val && "id" in val;
 }
 
 /** Keeping track of how many times an object was exposed. */
@@ -673,18 +674,20 @@ export function windowEndpoint(
   };
 }
 
-function toWireValue(this: Endpoint, value: any): TransferableTuple<WireValue> {
-  for (const [name, handler] of transferHandlers) {
-    if (handler.canHandle(value, this)) {
-      const [serializedValue, transfer] = handler.serialize(value, this);
-      return [
-        {
-          type: WireValueType.HANDLER,
-          name,
-          value: serializedValue,
-        },
-        transfer,
-      ];
+function toWireValue(this: Endpoint, value: unknown): TransferableTuple<WireValue> {
+  if (isReceiver(value)) {
+    for (const [name, handler] of transferHandlers) {
+      if (handler.canHandle(value, this)) {
+        const [serializedValue, transfer] = handler.serialize(value, this);
+        return [
+          {
+            type: WireValueType.HANDLER,
+            name,
+            value: serializedValue,
+          },
+          transfer,
+        ];
+      }
     }
   }
   return [

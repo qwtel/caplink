@@ -35,22 +35,23 @@ export const enum WireValueType {
   HANDLER = "HANDLER",
 }
 
+
+export type MessageId = string|number;
+
 export interface RawWireValue {
-  id?: string|number;
+  id?: MessageId;
   type: WireValueType.RAW;
-  value: {};
+  value: unknown;
 }
 
 export interface HandlerWireValue {
-  id?: string|number;
+  id?: MessageId;
   type: WireValueType.HANDLER;
   name: string;
   value: unknown;
 }
 
 export type WireValue = RawWireValue | HandlerWireValue;
-
-export type MessageId = string|number;
 
 export const enum MessageType {
   GET = "GET",
