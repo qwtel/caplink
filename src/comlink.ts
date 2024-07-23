@@ -512,12 +512,11 @@ function createProxy<T>(
   let isProxyReleased = false;
   const proxy = new Proxy(target, {
     get(_target, prop) {
-      throwIfProxyReleased(isProxyReleased);
       if (prop === Symbol.dispose || prop === releaseProxy) {
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          releaseEndpoint(ep) // Can't await result in sync disposal. Error will be reported as unhandled promise rejection
+          releaseEndpoint(ep).catch(() => {}) // Can't await result in sync disposal. Error will be suppressed
         };
       }
       if (prop === Symbol.asyncDispose) {
@@ -527,6 +526,7 @@ function createProxy<T>(
           await releaseEndpoint(ep);
         };
       }
+      throwIfProxyReleased(isProxyReleased);
       if (prop === "then") {
         if (path.length === 0) {
           return { then: () => proxy };
