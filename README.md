@@ -4,7 +4,7 @@ A modernized fork of [Comlink](https://github.com/GoogleChromeLabs/comlink) with
 
 ```ts
 // file: w1.ts
-import * as Caplink from 'caplink';
+import * as Caplink from '@workers/caplink';
 export class Greeter {
   helloWorld(name = "World") { 
     console.log(`Hello, ${name}!`);
@@ -20,7 +20,7 @@ Caplink.expose(W1Fns);
 
 ```ts
 // file: w2.ts
-import * as Caplink from 'caplink';
+import * as Caplink from '@workers/caplink';
 import type { Greeter } from "./w1.ts";
 
 export class W2Fns {
@@ -35,7 +35,7 @@ Caplink.expose(W2Fns);
 
 ```ts
 // file: index.ts
-import * as Caplink from 'caplink';
+import * as Caplink from '@workers/caplink';
 import type { W1Fns } from "./w1.ts";
 import type { W2Fns } from "./w2.ts";
 
