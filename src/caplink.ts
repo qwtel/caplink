@@ -1,4 +1,10 @@
 /**
+ * A modernized fork of [Comlink](https://github.com/GoogleChromeLabs/comlink) with many open PRs merged 
+ * and the ability to use proxies as values in Caplink calls.  
+ * @module
+ */
+
+/**
  * @license
  * Copyright 2019 Google LLC
  * SPDX-License-Identifier: Apache-2.0
