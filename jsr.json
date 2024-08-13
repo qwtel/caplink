@@ -1,6 +1,6 @@
 {
   "name": "@workers/caplink",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "exports": {
     ".": "./src/caplink.ts",
     "./node-adapter": "./src/node-adapter.ts"
