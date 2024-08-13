@@ -8,9 +8,9 @@ import type { TypedEventTarget } from "@worker-tools/typed-event-target";
 
 export type MessageEventTarget = Pick<TypedEventTarget<MessagePortEventMap>, "addEventListener"|"removeEventListener">;
 
-export const messageChannel = Symbol('Comlink.channelSpecies');
-export const adoptNative = Symbol('Comlink.adaptNative');
-export const toNative = Symbol('Comlink.toNative');
+export const messageChannel = Symbol('Caplink.messageChannel');
+export const adoptNative = Symbol('Caplink.adaptNative');
+export const toNative = Symbol('Caplink.toNative');
 
 export interface PostMessageWithOrigin {
   postMessage(

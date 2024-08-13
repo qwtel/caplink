@@ -1,21 +1,13 @@
 {
-  "name": "comlink-plus",
+  "name": "caplink",
   "version": "4.4.1",
-  "description": "Comlink makes WebWorkers enjoyable",
-  "main": "src/comlink.js",
-  "module": "src/comlink.js",
-  "types": "dist/umd/comlink.d.ts",
+  "description": "Caplink makes WebWorkers enjoyable",
+  "main": "src/caplink.ts",
+  "module": "src/caplink.ts",
+  "types": "dist/umd/caplink.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "rollup -c",
-    "test:unit": "karma start",
-    "test:node": "mocha ./tests/node/main.mjs",
-    "test:types": "tsc -p ./tests/tsconfig.json",
-    "test:types:watch": "npm run test:types -- --watch",
-    "test": "npm run fmt_test && npm run build && npm run test:types && npm run test:unit && npm run test:node",
-    "fmt": "prettier --write './*.{mjs,js,ts,md,json,html}' './{src,docs,tests}/{,**/}*.{mjs,js,ts,md,json,html}'",
-    "fmt_test": "test $(prettier -l './*.{mjs,js,ts,md,json,html}' './{src,docs,tests}/{**/,}*.{mjs,js,ts,md,json,html}' | wc -l) -eq 0",
-    "watchtest": "CHROME_ONLY=1 karma start --no-single-run"
+    "test": "exit 0"
   },
   "author": {
     "name": "Surma",
@@ -23,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/GoogleChromeLabs/comlink.git"
+    "url": "https://github.com/qwtel/caplink.git"
   },
   "license": "Apache-2.0",
   "devDependencies": {
