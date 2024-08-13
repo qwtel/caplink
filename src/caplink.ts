@@ -16,7 +16,8 @@ import {
   messageChannel,
   toNative,
   adoptNative,
-} from "./protocol";
+} from "./protocol.ts";
+
 export type { Endpoint, MessageEventTarget, PostMessageWithOrigin };
 
 export const proxyMarker = Symbol("Caplink.proxy");
@@ -282,10 +283,10 @@ const throwTransferHandler = {
 /**
  * Allows customizing the serialization of certain values.
  */
-export const transferHandlers = new Map<
+export const transferHandlers: Map<
   string,
   TransferHandler<object|Function, unknown>
->([
+> = new Map<string, any>([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
 ]);
@@ -409,6 +410,7 @@ export function expose(
       try {
         const [wireValue, transfer] = toWireValue.call(ep, returnValue);
         wireValue.id = id;
+        // @ts-ignore
         (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       catch (err) {
@@ -419,6 +421,7 @@ export function expose(
           [throwMarker]: 0,
         });
         wireValue.id = id;
+        // @ts-ignore
         (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       finally {

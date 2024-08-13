@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Endpoint } from "./protocol";
+import type { Endpoint } from "./protocol.ts";
 
 export interface NodeEndpoint {
   postMessage(message: any, transfer?: any[]): void;

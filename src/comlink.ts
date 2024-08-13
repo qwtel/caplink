@@ -1,1 +1,1 @@
-export * from './caplink';
+export * from './caplink.ts';

@@ -1,0 +1,14 @@
+{
+  "name": "@workers/caplink",
+  "version": "0.0.1",
+  "exports": {
+    ".": "./src/caplink.ts",
+    "./node-adapter": "./src/node-adapter.ts"
+  },
+  "imports": {
+    "@workers/typed-event-target": "jsr:@workers/typed-event-target@^1.0.0"
+  },
+  "exclude": [
+    ".tests"
+  ]
+}
