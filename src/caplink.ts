@@ -346,7 +346,7 @@ export function expose(
   if (locked.has(ep)) throw Error("Endpoint is already exposing another object and cannot be reused.");
   locked.add(ep);
   objectCounter.set(object, (objectCounter.get(object) || 0) + 1);
-  ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>) {
+  ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>): Promise<void> {
     const obj = object as any;
     if (!ev || !ev.data || !isOurMessage(ev.data)) {
       return;
