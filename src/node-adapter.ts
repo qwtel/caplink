@@ -21,43 +21,35 @@ import type { Endpoint } from "./protocol.ts";
 
 export interface NodeEndpoint {
   postMessage(message: any, transfer?: any[]): void;
-  on(
-    type: string,
-    listener: EventListenerOrEventListenerObject,
-    options?: {}
-  ): void;
-  off(
-    type: string,
-    listener: EventListenerOrEventListenerObject,
-    options?: {}
-  ): void;
+  on(type: string, listener: (value: any) => void): void;
+  off(type: string, listener: (value: any) => void): void;
   start?: () => void;
 }
+
+const mkl = (eh: EventListenerOrEventListenerObject) => (data: any) => {
+  if ("handleEvent" in eh) {
+    eh.handleEvent({ data } as MessageEvent); // XXX: doesn't work for non-MessageEvent
+  } else {
+    eh({ data } as MessageEvent); // XXX: doesn't work for non-MessageEvent
+  }
+};
 
 export default function nodeEndpoint(nep: Endpoint|NodeEndpoint): Endpoint {
   if (!('on' in nep) || !('off' in nep)) return nep;
   const listeners = new WeakMap();
   return {
     postMessage: nep.postMessage.bind(nep),
-    addEventListener: (_: string, eh: any) => {
-      const l = (data: any) => {
-        if ("handleEvent" in eh) {
-          eh.handleEvent({ data } as MessageEvent);
-        } else {
-          eh({ data } as MessageEvent);
-        }
-      };
-      nep.on("message", l);
+    addEventListener: (name: string, eh: EventListenerOrEventListenerObject) => {
+      const l = mkl(eh);
+      nep.on(name, l);
       listeners.set(eh, l);
     },
-    removeEventListener: (_: string, eh: any) => {
+    removeEventListener: (name: string, eh: EventListenerOrEventListenerObject) => {
       const l = listeners.get(eh);
-      if (!l) {
-        return;
-      }
-      nep.off("message", l);
+      if (!l) return;
+      nep.off(name, l);
       listeners.delete(eh);
     },
-    start: nep.start && nep.start.bind(nep),
+    ...nep.start && { start: nep.start.bind(nep) },
   };
 }

@@ -6,7 +6,8 @@
 
 import type { TypedEventTarget } from "@workers/typed-event-target";
 
-export type MessageEventTarget = Pick<TypedEventTarget<MessagePortEventMap>, "addEventListener"|"removeEventListener">;
+export type MessageEventTargetEventMap = MessagePortEventMap & { error: ErrorEvent, close: CloseEvent };
+export type MessageEventTarget = Pick<TypedEventTarget<MessageEventTargetEventMap>, "addEventListener"|"removeEventListener">;
 
 export const messageChannel = Symbol('Caplink.messageChannel');
 export const adoptNative = Symbol('Caplink.adaptNative');

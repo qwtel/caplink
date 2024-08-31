@@ -465,9 +465,12 @@ export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
   return createProxy<T>(ep, [], target) as any;
 }
 
-function throwIfProxyReleased(isReleased: boolean) {
+function throwIfProxyReleased(isReleased: boolean|string|Error) {
   if (isReleased) {
-    throw new Error("Proxy has been released and is not useable");
+    throw new Error(
+      "Proxy has been released and is not useable" + (typeof isReleased === 'string' ? `: ${isReleased}` : ''),
+      isReleased instanceof Error ? { cause: isReleased } : {},
+    );
   }
 }
 
@@ -475,9 +478,7 @@ async function releaseEndpoint(ep: Endpoint, force = false) {
   if (endpointState.has(ep)) {
     const { resolvers, messageHandler } = endpointState.get(ep)!;
     try {
-      const releasedPromise = !force ? requestResponseMessage(ep, {
-        type: MessageType.RELEASE,
-      }) : null;
+      const releasedPromise = !force && requestResponseMessage(ep, { type: MessageType.RELEASE });
       endpointState.delete(ep); // prevent reentry
       await releasedPromise; // now save to await
     } finally {
@@ -518,7 +519,7 @@ function createProxy<T>(
   path: PropertyKey[] = [],
   target: object = function () {}
 ): Remote<T> {
-  let isProxyReleased = false;
+  let isProxyReleased: boolean|string|Error = false;
   const proxy = new Proxy(target, {
     get(_target, prop) {
       if (prop === Symbol.dispose || prop === releaseProxy) {
@@ -632,16 +633,16 @@ function createProxy<T>(
   // If the endpoint gets closed on us, we should mark the proxy as released and reject all pending promises.
   // This shouldn't really happen since the proxy must be closed from this side, either through manual dispose or finalization registry.
   // Also note that support for the `close` event is unclear (MDN doesn't document it, spec says it should be there...), so this is a last resort.
-  ep.addEventListener("close", async () => {
-    isProxyReleased = true;
+  ep.addEventListener("close", async (ev) => {
+    isProxyReleased = ev.reason ?? 'closed';
     unregisterProxy(proxy);
     // Passing the force flag to skip sending a release message, since the endpoint is already closed.
     await releaseEndpoint(ep, true);
   });
 
   // Similarly, if the endpoint errors for any reason, we should mark the proxy as released and reject all pending promises.
-  ep.addEventListener("error", async () => {
-    isProxyReleased = true;
+  ep.addEventListener("error", async (ev) => {
+    isProxyReleased = ev.error instanceof Error ? ev.error : 'errored';
     unregisterProxy(proxy);
     await releaseEndpoint(ep, true);
   });
