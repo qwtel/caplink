@@ -462,12 +462,24 @@ function isCloseable(endpoint: object): endpoint is { close(): void } {
   return 'close' in endpoint && typeof endpoint.close === 'function';
 }
 
+function hasTerminate(endpoint: object): endpoint is { terminate(): void } {
+  return 'terminate' in endpoint && typeof endpoint.terminate === 'function';
+}
+
 function closeEndpoint(endpoint: Endpoint) {
   if (isCloseable(endpoint)) endpoint.close();
 }
 
-export function wrap<T>(ep: Endpoint, target?: any): Remote<T> {
-  return createProxy<T>(ep, [], target) as any;
+function disposeEndpoint(endpoint: Endpoint, owned = false) {
+  if (owned) {
+    if ('dispose' in Symbol && Symbol.dispose in endpoint) endpoint[Symbol.dispose]?.();
+    else if (hasTerminate(endpoint)) endpoint.terminate();
+  } 
+  else if (isCloseable(endpoint)) endpoint.close();
+}
+
+export function wrap<T>(ep: Endpoint, target?: any, options: WrapOptions = {}): Remote<T> {
+  return createProxy<T>(ep, [], target, options) as any;
 }
 
 function throwIfProxyReleased(isReleased: boolean|string|Error) {
@@ -479,7 +491,7 @@ function throwIfProxyReleased(isReleased: boolean|string|Error) {
   }
 }
 
-async function releaseEndpoint(ep: Endpoint, force = false) {
+async function releaseEndpoint(ep: Endpoint, force = false, owned = false) {
   if (endpointState.has(ep)) {
     const { resolvers, messageHandler } = endpointState.get(ep)!;
     try {
@@ -491,16 +503,16 @@ async function releaseEndpoint(ep: Endpoint, force = false) {
       resolvers.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
       resolvers.clear();
       ep.removeEventListener("message", messageHandler);
-      closeEndpoint(ep);
+      disposeEndpoint(ep, owned);
     }
   }
 }
 
-async function finalizeEndpoint(ep: Endpoint) {
+async function finalizeEndpoint([ep, owned]: [Endpoint, boolean]) {
   const newCount = (proxyCounter.get(ep) || 0) - 1;
   proxyCounter.set(ep, newCount);
   if (newCount === 0) {
-    await releaseEndpoint(ep);
+    await releaseEndpoint(ep, owned);
   }
 }
 
@@ -509,20 +521,29 @@ const proxyFinalizers = "FinalizationRegistry" in globalThis
   ? new FinalizationRegistry(finalizeEndpoint)
   : undefined;
 
-function registerProxy(proxy: object, ep: Endpoint) {
+function registerProxy(proxy: object, [ep, owned]: [Endpoint, boolean]) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
   proxyCounter.set(ep, newCount);
-  proxyFinalizers?.register(proxy, ep, proxy);
+  proxyFinalizers?.register(proxy, [ep, owned], proxy);
 }
 
 function unregisterProxy(proxy: object) {
   proxyFinalizers?.unregister(proxy);
 }
 
+export interface WrapOptions {
+  /** 
+   * Indicates that the remote owns the endpoint, meaning it will attempt to terminate/dispose of it when the remote is disposed or gc'ed. 
+   * Default true for `MessagePort`s and default false for `Worker`s. 
+   */
+  owned?: boolean;
+}
+
 function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
-  target: object = function () {}
+  target: object = function () {},
+  { owned = false }: WrapOptions = {},
 ): Remote<T> {
   let isProxyReleased: boolean|string|Error = false;
   const proxy = new Proxy(target, {
@@ -531,14 +552,14 @@ function createProxy<T>(
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          releaseEndpoint(ep).catch(() => {}) // Can't await result in sync disposal. Error will be suppressed
+          releaseEndpoint(ep, false, owned).catch() // Can't await result in sync disposal. Error will be suppressed
         };
       }
       if (prop === Symbol.asyncDispose) {
         return async () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          await releaseEndpoint(ep);
+          await releaseEndpoint(ep, false, owned);
         };
       }
       throwIfProxyReleased(isProxyReleased);
@@ -642,17 +663,17 @@ function createProxy<T>(
     isProxyReleased = ev.reason ?? 'closed';
     unregisterProxy(proxy);
     // Passing the force flag to skip sending a release message, since the endpoint is already closed.
-    await releaseEndpoint(ep, true);
+    await releaseEndpoint(ep, true, owned);
   });
 
   // Similarly, if the endpoint errors for any reason, we should mark the proxy as released and reject all pending promises.
   ep.addEventListener("error", async (ev) => {
     isProxyReleased = ev.error instanceof Error ? ev.error : 'errored';
     unregisterProxy(proxy);
-    await releaseEndpoint(ep, true);
+    await releaseEndpoint(ep, true, owned);
   });
 
-  registerProxy(proxy, ep);
+  registerProxy(proxy, [ep, owned]);
   return proxy as any;
 }
 

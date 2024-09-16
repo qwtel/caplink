@@ -27,6 +27,7 @@ export interface Endpoint extends MessageEventTarget {
   [messageChannel]?: typeof MessageChannel;
   [adoptNative]?: (port: MessagePort) => MessagePort;
   [toNative]?: () => MessagePort;
+  [Symbol.dispose]?: () => void;
 }
 
 export const enum WireValueType {
