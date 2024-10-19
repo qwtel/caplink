@@ -47,6 +47,6 @@ const w2 = Caplink.wrap<typeof W2Fns>(
 );
 
 using remoteGreeter = await w1.newGreeter(); 
-await remoteGreeter.helloWorld(); // logs "Hello, World" in w1.ts
-await w2.takeGreeter(remoteGreeter);    // logs "Hello, Worker 2" in w1.ts
+await remoteGreeter.helloWorld(); // logs "Hello, World" in worker 1
+await w2.takeGreeter(remoteGreeter);    // logs "Hello, Worker 2" in worker 1
 ```
