@@ -21,7 +21,7 @@ Caplink.expose(W1Fns);
 ```ts
 // file: worker-2.ts
 import * as Caplink from '@workers/caplink';
-import type { Greeter } from "./w1.ts";
+import type { Greeter } from "./worker-1.ts";
 
 export class W2Fns {
   static async takeGreeter(greeter: Caplink.Remote<Greeter>) {
