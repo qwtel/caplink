@@ -466,13 +466,17 @@ function hasTerminate(endpoint: object): endpoint is { terminate(): void } {
   return 'terminate' in endpoint && typeof endpoint.terminate === 'function';
 }
 
+function hasDispose(endpoint: object): endpoint is { [Symbol.dispose](): void } {
+  return 'dispose' in Symbol && Symbol.dispose in endpoint && endpoint[Symbol.dispose] != null;
+}
+
 function closeEndpoint(endpoint: Endpoint) {
   if (isCloseable(endpoint)) endpoint.close();
 }
 
 function disposeEndpoint(endpoint: Endpoint, owned = false) {
   if (owned) {
-    if ('dispose' in Symbol && Symbol.dispose in endpoint) endpoint[Symbol.dispose]?.();
+    if (hasDispose(endpoint)) endpoint[Symbol.dispose]();
     else if (hasTerminate(endpoint)) endpoint.terminate();
   } 
   else if (isCloseable(endpoint)) endpoint.close();
@@ -512,7 +516,7 @@ async function finalizeEndpoint([ep, owned]: [Endpoint, boolean]) {
   const newCount = (proxyCounter.get(ep) || 0) - 1;
   proxyCounter.set(ep, newCount);
   if (newCount === 0) {
-    await releaseEndpoint(ep, owned);
+    await releaseEndpoint(ep, undefined, owned);
   }
 }
 
