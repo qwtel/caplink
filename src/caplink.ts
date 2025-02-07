@@ -556,7 +556,7 @@ function createProxy<T>(
         return () => {
           isProxyReleased = true;
           unregisterProxy(proxy);
-          releaseEndpoint(ep, false, owned).catch() // Can't await result in sync disposal. Error will be suppressed
+          releaseEndpoint(ep, false, owned).catch(() => {}) // Can't await result in sync disposal. Error will be suppressed
         };
       }
       if (prop === Symbol.asyncDispose) {
