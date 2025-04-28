@@ -421,7 +421,6 @@ export function expose(
       try {
         const [wireValue, transfer] = toWireValue.call(ep, returnValue);
         wireValue.id = id;
-        // @ts-ignore
         (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       catch (err) {
@@ -432,7 +431,6 @@ export function expose(
           [throwMarker]: 0,
         });
         wireValue.id = id;
-        // @ts-ignore
         (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       finally {
