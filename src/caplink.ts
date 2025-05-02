@@ -480,7 +480,7 @@ function disposeEndpoint(endpoint: Endpoint, owned = false) {
   else if (isCloseable(endpoint)) endpoint.close();
 }
 
-export function wrap<T>(ep: Endpoint, target?: any, options: WrapOptions = {}): Remote<T> {
+export function wrap<T>(ep: Endpoint, target?: object|null, options: WrapOptions = {}): Remote<T> {
   return createProxy<T>(ep, [], target, options) as any;
 }
 
@@ -544,11 +544,11 @@ export interface WrapOptions {
 function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
-  target: object = function () {},
+  target?: object|null,
   { owned = false }: WrapOptions = {},
 ): Remote<T> {
   let isProxyReleased: boolean|string|Error = false;
-  const proxy = new Proxy(target, {
+  const proxy = new Proxy(target ?? function () {}, {
     get(_target, prop) {
       if (prop === Symbol.dispose || prop === releaseProxy) {
         return () => {
