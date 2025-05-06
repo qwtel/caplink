@@ -476,8 +476,8 @@ function disposeEndpoint(endpoint: Endpoint, owned = false) {
   if (owned) {
     if (hasDispose(endpoint)) endpoint[Symbol.dispose]();
     else if (hasTerminate(endpoint)) endpoint.terminate();
-  } 
-  else if (isCloseable(endpoint)) endpoint.close();
+  }
+  if (isCloseable(endpoint)) return endpoint.close();
 }
 
 export function wrap<T>(ep: Endpoint, target?: object|null, options: WrapOptions = {}): Remote<T> {
@@ -510,7 +510,9 @@ async function releaseEndpoint(ep: Endpoint, force = false, owned = false) {
   }
 }
 
-async function finalizeEndpoint([ep, owned]: [Endpoint, boolean]) {
+type ProxyFinalizationHeldValue = [ep: Endpoint, owned: boolean];
+
+async function finalizeProxy([ep, owned]: ProxyFinalizationHeldValue) {
   const newCount = (proxyCounter.get(ep) || 0) - 1;
   proxyCounter.set(ep, newCount);
   if (newCount === 0) {
@@ -520,10 +522,10 @@ async function finalizeEndpoint([ep, owned]: [Endpoint, boolean]) {
 
 const proxyCounter = new WeakMap<Endpoint, number>();
 const proxyFinalizers = "FinalizationRegistry" in globalThis
-  ? new FinalizationRegistry(finalizeEndpoint)
+  ? new FinalizationRegistry(finalizeProxy)
   : undefined;
 
-function registerProxy(proxy: object, [ep, owned]: [Endpoint, boolean]) {
+function registerProxy(proxy: object, [ep, owned]: ProxyFinalizationHeldValue) {
   const newCount = (proxyCounter.get(ep) || 0) + 1;
   proxyCounter.set(ep, newCount);
   proxyFinalizers?.register(proxy, [ep, owned], proxy);
@@ -658,22 +660,26 @@ function createProxy<T>(
     }
   });
 
-  // If the endpoint gets closed on us, we should mark the proxy as released and reject all pending promises.
-  // This shouldn't really happen since the proxy must be closed from this side, either through manual dispose or finalization registry.
-  // Also note that support for the `close` event is unclear (MDN doesn't document it, spec says it should be there...), so this is a last resort.
-  ep.addEventListener("close", async (ev) => {
-    isProxyReleased = ev.reason ?? 'closed';
-    unregisterProxy(proxy);
-    // Passing the force flag to skip sending a release message, since the endpoint is already closed.
-    await releaseEndpoint(ep, true, owned);
-  });
+  // XXX: Disabled due to difficulty cleaning up the event listeners.
+  // // If the endpoint gets closed on us, we should mark the proxy as released and reject all pending promises.
+  // // This shouldn't really happen since the proxy must be closed from this side, either through manual dispose or finalization registry.
+  // // Also note that support for the `close` event is unclear (MDN doesn't document it, spec says it should be there...), so this is a last resort.
+  // const closeHandler = async (ev: CloseEvent) => {
+  //   isProxyReleased = ev.reason ?? 'closed';
+  //   unregisterProxy(proxy);
+  //   // Passing the force flag to skip sending a release message, since the endpoint is already closed.
+  //   await releaseEndpoint(ep, true, owned);
+  // };
 
-  // Similarly, if the endpoint errors for any reason, we should mark the proxy as released and reject all pending promises.
-  ep.addEventListener("error", async (ev) => {
-    isProxyReleased = ev.error instanceof Error ? ev.error : 'errored';
-    unregisterProxy(proxy);
-    await releaseEndpoint(ep, true, owned);
-  });
+  // // Similarly, if the endpoint errors for any reason, we should mark the proxy as released and reject all pending promises.
+  // const errorHandler =  async (ev: ErrorEvent) => {
+  //   isProxyReleased = ev.error instanceof Error ? ev.error : 'errored';
+  //   unregisterProxy(proxy);
+  //   await releaseEndpoint(ep, true, owned);
+  // };
+
+  // ep.addEventListener("close", closeHandler);
+  // ep.addEventListener("error", errorHandler);
 
   registerProxy(proxy, [ep, owned]);
   return proxy as any;
