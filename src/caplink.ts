@@ -135,7 +135,7 @@ export interface ProxyMethods {
  */
 export type Remote<T> =
   // Handle properties
-  RemoteObject<T> &
+  (T extends object ? RemoteObject<T> : T) &
     // Handle call signature (if present)
     (T extends (...args: infer TArguments) => infer TReturn
       ? (
@@ -169,7 +169,7 @@ type MaybePromise<T> = PromiseLike<T> | T;
  */
 export type Local<T> =
   // Omit the special proxy methods (they don't need to be supplied, caplink adds them)
-  Omit<LocalObject<T>, keyof ProxyMethods> &
+  (T extends object ? Omit<LocalObject<T>, keyof ProxyMethods> : T) &
     // Handle call signatures (if present)
     (T extends (...args: infer TArguments) => infer TReturn
       ? (
