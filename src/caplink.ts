@@ -424,7 +424,7 @@ export function expose(
         (ev.source ?? ep).postMessage(wireValue, { transfer });
       }
       catch (err) {
-        console.error(err)
+        import.meta.env?.DEV && console.error(err);
         // Send Serialization Error To Caller
         const [wireValue, transfer] = toWireValue.call(ep, {
           value: new TypeError("Unserializable return value"),
