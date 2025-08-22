@@ -543,6 +543,14 @@ export interface WrapOptions {
   owned?: boolean;
 }
 
+function setupEndpoint(ep: Endpoint) {
+  const resolvers = new Map();
+  const messageHandler = makeMessageHandler(resolvers);
+  endpointState.set(ep, { resolvers, messageHandler });
+  ep.addEventListener("message", messageHandler);
+  ep.start?.();
+}
+
 function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
@@ -550,6 +558,7 @@ function createProxy<T>(
   { owned = false }: WrapOptions = {},
 ): Remote<T> {
   let isProxyReleased: boolean|string|Error = false;
+  setupEndpoint(ep);
   const proxy = new Proxy(target ?? function () {}, {
     get(_target, prop) {
       if (prop === Symbol.dispose || prop === releaseProxy) {
@@ -770,20 +779,12 @@ function requestResponseMessage(
   msg: Message,
   transfer?: Transferable[]
 ): Promise<WireValue> {
-  return new Promise((resolve, reject) => {
-    let resolvers = endpointState.get(ep)?.resolvers;
-    if (!resolvers) {
-      resolvers = new Map();
-      const messageHandler = makeMessageHandler(resolvers);
-      endpointState.set(ep, { resolvers, messageHandler });
-      ep.addEventListener("message", messageHandler);
-      ep.start?.();
-    }
-    const id = generateId();
-    msg.id = id;
-    resolvers.set(id, { resolve, reject });
-    ep.postMessage(msg, transfer);
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<WireValue>();
+  const id = generateId();
+  msg.id = id;
+  endpointState.get(ep)?.resolvers.set(id, { resolve, reject });
+  ep.postMessage(msg, transfer);
+  return promise;
 }
 
 function generateId(): MessageId {
