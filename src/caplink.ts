@@ -26,6 +26,12 @@ import {
 
 export type { Endpoint, MessageEventTarget, PostMessageWithOrigin };
 
+export type PromiseWithResolvers<T> = {
+  promise: Promise<T>;
+  resolve: (value?: T | PromiseLike<T>) => void;
+  reject: (reason?: any) => void;
+};
+
 export const proxyMarker = Symbol("Caplink.proxy");
 export const createEndpoint = Symbol("Caplink.endpoint");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
@@ -122,11 +128,11 @@ export type LocalObject<T> = { [P in keyof T]: LocalProperty<T[P]> };
  * Additional special caplink methods available on each proxy returned by `Caplink.wrap()`.
  */
 export interface ProxyMethods {
-  [createEndpoint]: () => MessagePort;
-  [Symbol.dispose]: () => void;
-  [Symbol.asyncDispose]: () => Promise<void>;
+  [createEndpoint](): MessagePort;
+  [Symbol.dispose](): void;
+  [Symbol.asyncDispose](): Promise<void>;
   /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
-  [releaseProxy]: () => Promise<void>;
+  [releaseProxy](): Promise<void>;
 }
 
 /**
@@ -225,8 +231,8 @@ export interface TransferHandler<T extends object|Function, S> {
   deserialize(value: S, ep: Endpoint): T;
 }
 
-const isNativeEndpoint = (x: unknown): x is Worker|MessagePort => {
-  return ('Worker' in globalThis && x instanceof globalThis.Worker) || ('MessagePort' in globalThis && x instanceof globalThis.MessagePort);
+const isNativeMessagePort = (x: unknown): x is MessagePort => {
+  return ('MessagePort' in globalThis && x instanceof globalThis.MessagePort);
 }
 const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => {
   return isReceiver(x) && toNative in x;
@@ -241,9 +247,9 @@ const proxyTransferHandler = {
     let port;
     if (createEndpoint in obj) {
       port = obj[createEndpoint]();
-      if (isNativeEndpoint(ep) && isNativeConvertible(port)) {
+      if (isNativeMessagePort(ep) && isNativeConvertible(port)) {
         port = port[toNative]();
-      } else if (ep[adoptNative] && isNativeEndpoint(port)) {
+      } else if (ep[adoptNative] && isNativeMessagePort(port)) {
         port = ep[adoptNative](port);
       }
     } else {
