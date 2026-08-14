@@ -2,6 +2,10 @@
 
 A modernized fork of [Comlink](https://github.com/GoogleChromeLabs/comlink) with many open PRs merged and the ability to use proxies as values in Caplink calls.  
 
+Functions are capabilities automatically; objects still opt in with
+`Caplink.proxy()`. Capability identity survives forwarding and round trips, so
+an object sent back to its owning realm is restored to the original object.
+
 ```ts
 // file: w1.ts
 import * as Caplink from '@workers/caplink';

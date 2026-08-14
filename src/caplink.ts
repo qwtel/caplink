@@ -57,18 +57,24 @@ interface Proxy {
   [createEndpoint](): MessagePort
 }
 
+type ProxyValue = Proxy | ProxyMarked | Function;
+
 interface ProxyWireValue {
   /** Opaque identity assigned by the realm that owns the capability. */
   capability?: string;
   port: MessagePort;
 }
 
-const localCapabilityIds = new WeakMap<object|Function, string>();
-const localCapabilities = new Map<string, object|Function>();
+const localCapabilityIds = new WeakMap<ProxyValue, string>();
+const localCapabilities = new Map<string, ProxyValue>();
 const remoteCapabilityIds = new WeakMap<object|Function, string>();
 const exposedEndpoints = new WeakSet<Endpoint>();
+const forbiddenPathMembers = new Set<PropertyKey>([
+  '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__',
+  '__proto__', 'arguments', 'caller', 'constructor', 'prototype',
+]);
 
-function capabilityId(value: object|Function) {
+function capabilityId(value: ProxyValue) {
   let id = localCapabilityIds.get(value);
   if (!id) {
     id = crypto.randomUUID();
@@ -112,9 +118,9 @@ type LocalProperty<T> = T extends Function | ProxyMarked
   : Awaited<T>;
 
 /**
- * Proxies `T` if it is a `ProxyMarked`, clones it otherwise (as handled by structured cloning and transfer handlers).
+ * Proxies functions and explicitly marked objects, and clones other values.
  */
-export type ProxyOrClone<T> = T extends ProxyMarked ? Remote<T> : T;
+export type ProxyOrClone<T> = T extends Function | ProxyMarked ? Remote<T> : T;
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
@@ -263,7 +269,9 @@ const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => 
  * Internal transfer handle to handle objects marked to proxy.
  */
 const proxyTransferHandler = {
-  canHandle: (val): val is Proxy|ProxyMarked => proxyMarker in val || createEndpoint in val,
+  canHandle: (val): val is ProxyValue => (
+    typeof val === 'function' || proxyMarker in val || createEndpoint in val
+  ),
   serialize(obj, ep) {
     const capability = createEndpoint in obj
       ? remoteCapabilityIds.get(obj)
@@ -294,11 +302,11 @@ const proxyTransferHandler = {
       return local;
     }
     port.start();
-    const remote = wrap(port);
+    const remote = wrap(port) as Proxy;
     if (capability) remoteCapabilityIds.set(remote, capability);
     return remote;
   },
-} satisfies TransferHandler<Proxy|ProxyMarked, ProxyWireValue>;
+} satisfies TransferHandler<ProxyValue, ProxyWireValue>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -362,6 +370,18 @@ function isOurMessage(val: unknown): val is Message {
   return isObject(val) && "type" in val && "id" in val;
 }
 
+function assertSafePath(path: readonly PropertyKey[]) {
+  const forbidden = path.find((member) => forbiddenPathMembers.has(member));
+  if (forbidden !== undefined) {
+    throw new TypeError(`Caplink capability path denied: ${String(forbidden)}`);
+  }
+}
+
+function resolvePath(object: any, path: readonly PropertyKey[]) {
+  assertSafePath(path);
+  return path.reduce((value, property) => value[property], object);
+}
+
 /** Keeping track of how many times an object was exposed. */
 const objectCounter = new WeakMap<object, number>();
 
@@ -409,28 +429,29 @@ export function expose(
       switch (type) {
         case MessageType.GET:
           {
-            const rawValue = data.path.reduce((obj, prop) => obj[prop], obj);
+            const rawValue = resolvePath(obj, data.path);
             returnValue = rawValue;
           }
           break;
         case MessageType.SET:
           {
-            const parent = data.path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
+            assertSafePath(data.path);
+            const parent = resolvePath(obj, data.path.slice(0, -1));
             parent[data.path.slice(-1)[0]] = fromWireValue.call(ep, data.value);
             returnValue = true;
           }
           break;
         case MessageType.APPLY:
           {
-            const parent = data.path.slice(0, -1).reduce((obj, prop) => obj[prop], obj);
-            const rawValue = data.path.reduce((obj, prop) => obj[prop], obj);
+            const parent = resolvePath(obj, data.path.slice(0, -1));
+            const rawValue = resolvePath(obj, data.path);
             const argumentList = data.argumentList.map(fromWireValue, ep);
             returnValue = rawValue.apply(parent, argumentList);
           }
           break;
         case MessageType.CONSTRUCT:
           {
-            const rawValue = data.path.reduce((obj, prop) => obj[prop], obj);
+            const rawValue = resolvePath(obj, data.path);
             const argumentList = data.argumentList.map(fromWireValue, ep);
             const value = new rawValue(...argumentList);
             returnValue = proxy(value);
