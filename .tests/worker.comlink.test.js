@@ -27,6 +27,13 @@ describe("Comlink across workers", function () {
     expect(await proxy(1, 3)).to.equal(4);
   });
 
+  it("restores a capability passed back to its owning worker", async function () {
+    const proxy = Comlink.wrap(this.worker);
+    const capability = await proxy.capability();
+    expect(await proxy.isOriginal(capability)).to.equal(true);
+    await capability[Symbol.asyncDispose]();
+  });
+
   it("can tunnels a new endpoint with createEndpoint", async function () {
     const proxy = Comlink.wrap(this.worker);
     const otherEp = await proxy[Comlink.createEndpoint]();

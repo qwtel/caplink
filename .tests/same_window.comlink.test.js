@@ -409,6 +409,19 @@ describe("Comlink in the same realm", function () {
     expect(await obj.counter).to.equal(1);
   });
 
+  it("restores a capability passed back to its owning endpoint", async function () {
+    const capability = Comlink.proxy({ value: "original" });
+    const thing = Comlink.wrap(this.port1);
+    Comlink.expose({
+      capability: () => capability,
+      isOriginal: (value) => value === capability,
+    }, this.port2);
+
+    const returned = await thing.capability();
+    expect(await thing.isOriginal(returned)).to.equal(true);
+    await returned[Symbol.asyncDispose]();
+  });
+
   it("will wrap marked return values from class instance methods", async function () {
     const thing = Comlink.wrap(this.port1);
     Comlink.expose(SampleClass, this.port2);

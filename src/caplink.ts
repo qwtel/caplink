@@ -57,6 +57,27 @@ interface Proxy {
   [createEndpoint](): MessagePort
 }
 
+interface ProxyWireValue {
+  /** Opaque identity assigned by the realm that owns the capability. */
+  capability?: string;
+  port: MessagePort;
+}
+
+const localCapabilityIds = new WeakMap<object|Function, string>();
+const localCapabilities = new Map<string, object|Function>();
+const remoteCapabilityIds = new WeakMap<object|Function, string>();
+const exposedEndpoints = new WeakSet<Endpoint>();
+
+function capabilityId(value: object|Function) {
+  let id = localCapabilityIds.get(value);
+  if (!id) {
+    id = crypto.randomUUID();
+    localCapabilityIds.set(value, id);
+  }
+  localCapabilities.set(id, value);
+  return id;
+}
+
 /**
  * Takes a type and wraps it in a Promise, if it not already is one.
  * This is to avoid `Promise<Promise<T>>`.
@@ -244,6 +265,9 @@ const isNativeConvertible = (x: unknown): x is { [toNative](): MessagePort } => 
 const proxyTransferHandler = {
   canHandle: (val): val is Proxy|ProxyMarked => proxyMarker in val || createEndpoint in val,
   serialize(obj, ep) {
+    const capability = createEndpoint in obj
+      ? remoteCapabilityIds.get(obj)
+      : capabilityId(obj);
     let port;
     if (createEndpoint in obj) {
       port = obj[createEndpoint]();
@@ -257,13 +281,24 @@ const proxyTransferHandler = {
       expose(obj, port1);
       port = port2;
     }
-    return [port, [port]];
+    return [{ capability, port }, [port]];
   },
-  deserialize(port) {
+  deserialize({ capability, port }, ep) {
+    const local = capability && exposedEndpoints.has(ep)
+      ? localCapabilities.get(capability)
+      : undefined;
+    if (local) {
+      // The capability completed a round trip. Return the original object and
+      // close the redundant forwarding endpoint created by `createEndpoint`.
+      port.close();
+      return local;
+    }
     port.start();
-    return wrap(port);
+    const remote = wrap(port);
+    if (capability) remoteCapabilityIds.set(remote, capability);
+    return remote;
   },
-} satisfies TransferHandler<Proxy|ProxyMarked, MessagePort>;
+} satisfies TransferHandler<Proxy|ProxyMarked, ProxyWireValue>;
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
@@ -335,6 +370,8 @@ async function finalizeObject(obj: any) {
   const newCount = (objectCounter.get(obj) || 0) - 1;
   objectCounter.set(obj, newCount);
   if (newCount === 0) {
+    const capability = localCapabilityIds.get(obj);
+    if (capability) localCapabilities.delete(capability);
     // Run finalizers before sending message so caller can be sure that resources are freed up
     if ('dispose' in Symbol && Symbol.dispose in obj) {
       obj[Symbol.dispose]();
@@ -348,14 +385,13 @@ async function finalizeObject(obj: any) {
   }
 }
 
-const locked = new WeakSet<Endpoint>
 export function expose(
   object: object,
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
-  if (locked.has(ep)) throw Error("Endpoint is already exposing another object and cannot be reused.");
-  locked.add(ep);
+  if (exposedEndpoints.has(ep)) throw Error("Endpoint is already exposing another object and cannot be reused.");
+  exposedEndpoints.add(ep);
   objectCounter.set(object, (objectCounter.get(object) || 0) + 1);
   ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>): Promise<void> {
     const obj = object as any;
