@@ -68,6 +68,7 @@ interface ProxyWireValue {
 const localCapabilityIds = new WeakMap<ProxyValue, string>();
 const localCapabilities = new Map<string, ProxyValue>();
 const remoteCapabilityIds = new WeakMap<object|Function, string>();
+const remoteCapabilities = new WeakMap<Endpoint, Map<string, WeakRef<Proxy>>>();
 const exposedEndpoints = new WeakSet<Endpoint>();
 const forbiddenPathMembers = new Set<PropertyKey>([
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__',
@@ -301,9 +302,21 @@ const proxyTransferHandler = {
       port.close();
       return local;
     }
+    const cached = capability && remoteCapabilities.get(ep)?.get(capability)?.deref();
+    if (cached) {
+      // Repeatedly sending the same capability must preserve object identity,
+      // just as passing the same object repeatedly within one realm does.
+      port.close();
+      return cached;
+    }
     port.start();
     const remote = wrap(port) as Proxy;
-    if (capability) remoteCapabilityIds.set(remote, capability);
+    if (capability) {
+      remoteCapabilityIds.set(remote, capability);
+      let capabilities = remoteCapabilities.get(ep);
+      if (!capabilities) remoteCapabilities.set(ep, capabilities = new Map());
+      capabilities.set(capability, new WeakRef(remote));
+    }
     return remote;
   },
 } satisfies TransferHandler<ProxyValue, ProxyWireValue>;
