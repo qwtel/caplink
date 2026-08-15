@@ -28,11 +28,15 @@ export type { Endpoint, MessageEventTarget, PostMessageWithOrigin };
 
 export type PromiseWithResolvers<T> = {
   promise: Promise<T>;
-  resolve: (value?: T | PromiseLike<T>) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
   reject: (reason?: any) => void;
 };
 
 export const proxyMarker = Symbol("Caplink.proxy");
+export const tupleMarker = Symbol("Caplink.tuple");
+export const recordMarker = Symbol("Caplink.record");
+declare const tupleValue: unique symbol;
+declare const recordValue: unique symbol;
 export const createEndpoint = Symbol("Caplink.endpoint");
 /** @deprecated Use `Symbol.dispose` or `Symbol.asyncDispose` instead */
 export const releaseProxy = Symbol("Caplink.releaseProxy");
@@ -49,6 +53,26 @@ const throwMarker = Symbol("Caplink.thrown");
 export interface ProxyMarked {
   [proxyMarker]: true;
 }
+
+export interface TupleMarked<Value extends readonly unknown[] = readonly unknown[]> {
+  readonly [tupleMarker]: true;
+  readonly [tupleValue]?: Value;
+}
+
+export interface RecordMarked<Value extends object = object> {
+  readonly [recordMarker]: true;
+  readonly [recordValue]?: Value;
+}
+
+type TupleOrRecordMarked = TupleMarked | RecordMarked;
+
+type ProxyTuple<T extends readonly unknown[]> = T extends unknown[]
+  ? { [Index in keyof T]: ProxyOrClone<T[Index]> }
+  : Readonly<{ [Index in keyof T]: ProxyOrClone<T[Index]> }>;
+
+type UnproxyTuple<T extends readonly unknown[]> = T extends unknown[]
+  ? { [Index in keyof T]: UnproxyOrClone<T[Index]> }
+  : Readonly<{ [Index in keyof T]: UnproxyOrClone<T[Index]> }>;
 
 /**
  * Interface for our own proxy objects. The defining characteristic is the ability to get the underlying message port.
@@ -103,7 +127,9 @@ type RemoteProperty<T> =
   // If the value is a function, caplink will proxy it automatically.
   // Objects are only proxied if they are marked to be proxied.
   // Otherwise, the property is converted to a Promise that resolves the cloned value.
-  T extends Function | ProxyMarked ? Remote<T> : Promisify<T>;
+  T extends Function | ProxyMarked ? Remote<T>
+  : T extends TupleOrRecordMarked ? Promisify<ProxyOrClone<T>>
+  : Promisify<T>;
 
 /**
  * Takes the raw type of a property as a remote thread would see it through a proxy (e.g. when passed in as a function
@@ -121,12 +147,23 @@ type LocalProperty<T> = T extends Function | ProxyMarked
 /**
  * Proxies functions and explicitly marked objects, and clones other values.
  */
-export type ProxyOrClone<T> = T extends Function | ProxyMarked ? Remote<T> : T;
+export type ProxyOrClone<T> = T extends TupleMarked<infer Value>
+  ? ProxyTuple<Value>
+  : T extends RecordMarked<infer Value>
+  ? { [P in keyof Value]: ProxyOrClone<Value[P]> }
+  : T extends Function | ProxyMarked ? Remote<T>
+  : T;
 /**
  * Inverse of `ProxyOrClone<T>`.
  */
-export type UnproxyOrClone<T> = T extends Remote<infer U>
+export type UnproxyOrClone<T> = T extends TupleMarked<infer Value>
+  ? UnproxyTuple<Value>
+  : T extends RecordMarked<infer Value>
+  ? { [P in keyof Value]: UnproxyOrClone<Value[P]> }
+  : T extends Remote<infer U>
   ? U & ProxyMarked | Remote<U>
+  : T extends ProxyMarked
+  ? Local<T> | Remote<T>
   : T extends RemoteObject<ProxyMarked>
   ? Local<T>
   : T;
@@ -321,6 +358,38 @@ const proxyTransferHandler = {
   },
 } satisfies TransferHandler<ProxyValue, ProxyWireValue>;
 
+const tupleTransferHandler = {
+  canHandle: (value): value is unknown[] => (
+    Array.isArray(value) && tupleMarker in value
+  ),
+  serialize: (value, ep) => serializeMarkedContainer(value, () => processTuple(value, ep)),
+  deserialize: (value, ep) => value.map(fromWireValue, ep),
+} satisfies TransferHandler<unknown[], WireValue[]>;
+
+const recordTransferHandler = {
+  canHandle: (value): value is Record<string, unknown> => (
+    isObject(value) && !Array.isArray(value) && recordMarker in value
+  ),
+  serialize: (value, ep) => serializeMarkedContainer(value, () => processRecord(value, ep)),
+  deserialize: (value, ep) => Object.fromEntries(Object.entries(value).map(([key, wireValue]) => (
+    [key, fromWireValue.call(ep, wireValue)]
+  ))),
+} satisfies TransferHandler<Record<string, unknown>, Record<string, WireValue>>;
+
+const serializingMarkedContainers = new WeakSet<object>();
+
+function serializeMarkedContainer<T>(value: object, serialize: () => TransferableTuple<T>) {
+  if (serializingMarkedContainers.has(value)) {
+    throw new TypeError('Caplink record/tuple containers cannot be cyclic');
+  }
+  serializingMarkedContainers.add(value);
+  try {
+    return serialize();
+  } finally {
+    serializingMarkedContainers.delete(value);
+  }
+}
+
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
   value: unknown;
@@ -362,6 +431,8 @@ export const transferHandlers: Map<
 > = new Map<string, any>([
   ["proxy", proxyTransferHandler],
   ["throw", throwTransferHandler],
+  ["tuple", tupleTransferHandler],
+  ["record", recordTransferHandler],
 ]);
 
 function isAllowedOrigin(
@@ -779,6 +850,20 @@ function processTuple(argumentList: any[], ep: Endpoint): TransferableTuple<Wire
   return [processed.map((v) => v[0]), flatten(processed.map((v) => v[1]))];
 }
 
+function processRecord(
+  argumentRecord: Record<string, unknown>,
+  ep: Endpoint,
+): TransferableTuple<Record<string, WireValue>> {
+  const processed = Object.entries(argumentRecord).map(([key, value]) => {
+    const [wireValue, transfers] = toWireValue.call(ep, value);
+    return { key, transfers, wireValue };
+  });
+  return [
+    Object.fromEntries(processed.map(({ key, wireValue }) => [key, wireValue])),
+    processed.flatMap(({ transfers }) => transfers),
+  ];
+}
+
 const transferCache = new WeakMap<any, Transferable[]>();
 export function transfer<T>(obj: T, transfers: Transferable[]): T {
   transferCache.set(obj, transfers);
@@ -789,6 +874,18 @@ export function proxy<T extends {}>(obj: T): T & ProxyMarked {
   const n = obj as T & ProxyMarked;
   n[proxyMarker] = true;
   return n;
+}
+
+/** Clone an array while applying Caplink transfer handlers to each item. */
+export function tuple<T extends readonly unknown[]>(value: T): T & TupleMarked<T> {
+  Object.defineProperty(value, tupleMarker, { configurable: true, value: true });
+  return value as T & TupleMarked<T>;
+}
+
+/** Clone an object while applying Caplink transfer handlers to each own enumerable property. */
+export function record<T extends object>(value: T): T & RecordMarked<T> {
+  Object.defineProperty(value, recordMarker, { configurable: true, value: true });
+  return value as T & RecordMarked<T>;
 }
 
 export function windowEndpoint(
@@ -858,8 +955,14 @@ function requestResponseMessage(
   const { promise, resolve, reject } = Promise.withResolvers<WireValue>();
   const id = generateId();
   msg.id = id;
-  endpointState.get(ep)?.resolvers.set(id, { resolve, reject });
-  ep.postMessage(msg, transfer);
+  const resolvers = endpointState.get(ep)?.resolvers;
+  resolvers?.set(id, { resolve, reject });
+  try {
+    ep.postMessage(msg, transfer);
+  } catch (error) {
+    resolvers?.delete(id);
+    reject(error);
+  }
   return promise;
 }
 
