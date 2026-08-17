@@ -15,6 +15,29 @@ interface Capability extends Caplink.ProxyMarked {
 declare const capability: Capability;
 declare const remoteCapability: Caplink.Remote<Capability>;
 
+type SqlValue = string | number | null | bigint | Uint8Array | Int8Array | ArrayBuffer;
+type JsonPatch = { __patch__: object | null };
+declare const sqlValueOrPatch: SqlValue | JsonPatch;
+declare const acceptSqlValueOrPatch: Caplink.Remote<(value: SqlValue | JsonPatch) => void>;
+acceptSqlValueOrPatch(sqlValueOrPatch);
+type SqlValueArgumentIsUnchanged = Expect<Equal<
+  Parameters<typeof acceptSqlValueOrPatch>[0],
+  SqlValue | JsonPatch
+>>;
+
+declare const optionalConfirmationHost: {
+  confirmLargeChanges(): Promise<void>;
+} | undefined;
+const confirmationCapability = Caplink.proxy({
+  async confirmLargeChanges() {
+    await optionalConfirmationHost?.confirmLargeChanges();
+  },
+});
+declare const acceptConfirmationCapability: Caplink.Remote<(
+  remote?: { confirmLargeChanges(): Promise<void> },
+) => void>;
+acceptConfirmationCapability(confirmationCapability);
+
 const record = Caplink.record({ capability, label: 'record' as const });
 type RecordMarkerIsBoolean = Expect<Equal<typeof record[typeof Caplink.recordMarker], true>>;
 declare const returnRecord: Caplink.Remote<() => typeof record>;
@@ -64,4 +87,5 @@ export type RecordTupleTypeChecks = [
   OptionalReturnIsMapped,
   RecordMarkerIsBoolean,
   TupleMarkerIsBoolean,
+  SqlValueArgumentIsUnchanged,
 ];

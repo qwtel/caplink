@@ -160,12 +160,10 @@ export type UnproxyOrClone<T> = T extends TupleMarked<infer Value>
   ? UnproxyTuple<Value>
   : T extends RecordMarked<infer Value>
   ? { [P in keyof Value]: UnproxyOrClone<Value[P]> }
+  : T extends ProxyMarked
+  ? T | Remote<T>
   : T extends Remote<infer U>
   ? U & ProxyMarked | Remote<U>
-  : T extends ProxyMarked
-  ? Local<T> | Remote<T>
-  : T extends RemoteObject<ProxyMarked>
-  ? Local<T>
   : T;
 
 /**
