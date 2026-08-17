@@ -92,7 +92,23 @@ interface ProxyWireValue {
 const localCapabilityIds = new WeakMap<ProxyValue, string>();
 const localCapabilities = new Map<string, ProxyValue>();
 const remoteCapabilityIds = new WeakMap<object|Function, string>();
-const remoteCapabilities = new WeakMap<Endpoint, Map<string, WeakRef<Proxy>>>();
+// Capability IDs are realm-wide. A capability may arrive through the main
+// endpoint, a callback endpoint, or another capability endpoint and must keep
+// the same JavaScript identity across all of them.
+const remoteCapabilities = new Map<string, WeakRef<Proxy>>();
+const remoteCapabilityFinalizers = 'FinalizationRegistry' in globalThis
+  ? new FinalizationRegistry<readonly [string, WeakRef<Proxy>]>(([capability, reference]) => {
+      if (remoteCapabilities.get(capability) === reference) remoteCapabilities.delete(capability);
+    })
+  : undefined;
+
+function forgetRemoteCapability(proxy: object) {
+  const capability = remoteCapabilityIds.get(proxy);
+  if (capability && remoteCapabilities.get(capability)?.deref() === proxy) {
+    remoteCapabilities.delete(capability);
+  }
+  remoteCapabilityFinalizers?.unregister(proxy);
+}
 const exposedEndpoints = new WeakSet<Endpoint>();
 const forbiddenPathMembers = new Set<PropertyKey>([
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__',
@@ -337,7 +353,7 @@ const proxyTransferHandler = {
       port.close();
       return local;
     }
-    const cached = capability && remoteCapabilities.get(ep)?.get(capability)?.deref();
+    const cached = capability && remoteCapabilities.get(capability)?.deref();
     if (cached) {
       // Repeatedly sending the same capability must preserve object identity,
       // just as passing the same object repeatedly within one realm does.
@@ -348,9 +364,9 @@ const proxyTransferHandler = {
     const remote = wrap(port) as Proxy;
     if (capability) {
       remoteCapabilityIds.set(remote, capability);
-      let capabilities = remoteCapabilities.get(ep);
-      if (!capabilities) remoteCapabilities.set(ep, capabilities = new Map());
-      capabilities.set(capability, new WeakRef(remote));
+      const reference = new WeakRef(remote);
+      remoteCapabilities.set(capability, reference);
+      remoteCapabilityFinalizers?.register(remote, [capability, reference], remote);
     }
     return remote;
   },
@@ -709,6 +725,7 @@ function createProxy<T>(
       if (prop === Symbol.dispose || prop === releaseProxy) {
         return () => {
           isProxyReleased = true;
+          forgetRemoteCapability(proxy);
           unregisterProxy(proxy);
           releaseEndpoint(ep, false, owned).catch(() => {}) // Can't await result in sync disposal. Error will be suppressed
         };
@@ -716,6 +733,7 @@ function createProxy<T>(
       if (prop === Symbol.asyncDispose) {
         return async () => {
           isProxyReleased = true;
+          forgetRemoteCapability(proxy);
           unregisterProxy(proxy);
           await releaseEndpoint(ep, false, owned);
         };
