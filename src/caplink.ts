@@ -705,6 +705,7 @@ export interface WrapOptions {
 }
 
 function setupEndpoint(ep: Endpoint) {
+  if (endpointState.has(ep)) return;
   const resolvers = new Map();
   const messageHandler = makeMessageHandler(resolvers);
   endpointState.set(ep, { resolvers, messageHandler });
