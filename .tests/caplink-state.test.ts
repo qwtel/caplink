@@ -194,6 +194,21 @@ describe('Caplink endpoint lifecycle', () => {
     expect((await releaseError as Error).message).toContain('closed during release');
   });
 
+  it('times out async disposal when RELEASE is never acknowledged', async () => {
+    const previousTimeout = Caplink.releaseConfig.timeout;
+    Caplink.releaseConfig.timeout = 0;
+    try {
+      const controlled = controlledEndpoint(() => {});
+      const remote = Caplink.wrap<any>(controlled.endpoint);
+
+      expect((await captureError(remote[Symbol.asyncDispose]()) as Error).name).toBe('TimeoutError');
+      expect(controlled.lifecycle.closes).toBe(1);
+      expect(() => remote.value).toThrow('Proxy has been released');
+    } finally {
+      Caplink.releaseConfig.timeout = previousTimeout;
+    }
+  });
+
   it('retains endpoint ownership when disposing through a child path', async () => {
     const owned = controlledEndpoint();
     const unowned = controlledEndpoint();

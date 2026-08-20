@@ -37,7 +37,6 @@ export const enum WireValueType {
   HANDLER = "HANDLER",
 }
 
-
 export type MessageId = string|number;
 
 export interface RawWireValue {

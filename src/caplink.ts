@@ -43,6 +43,8 @@ export const releaseProxy = Symbol("Caplink.releaseProxy");
 export const finalizer = Symbol("Caplink.finalizer");
 export { messageChannel, toNative, adoptNative };
 
+export const releaseConfig = { timeout: 30_000 };
+
 const throwMarker = Symbol("Caplink.thrown");
 
 /**
@@ -581,6 +583,14 @@ export function expose(
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
+  if (
+    !isObject(ep)
+    || typeof ep.addEventListener !== 'function'
+    || typeof ep.removeEventListener !== 'function'
+    || typeof ep.postMessage !== 'function'
+  ) {
+    throw new TypeError('Invalid Caplink endpoint');
+  }
   addExposure(object, ep);
   const listeners = new AbortController();
   const endpointClosed = () => {
@@ -731,8 +741,10 @@ function releaseEndpoint(ep: Endpoint): Promise<void> {
   if (!state || state.status === 'closed' || state.status === 'broken') return Promise.resolve();
   if (state.releasePromise) return state.releasePromise;
 
-  const acknowledgement = requestResponseMessage(ep, { type: MessageType.RELEASE })
-    .then(fromWireValue.bind(ep));
+  const acknowledgement = Promise.race([
+    requestResponseMessage(ep, { type: MessageType.RELEASE }).then(fromWireValue.bind(ep)),
+    new Promise<never>((_, rej) => setTimeout(rej, releaseConfig.timeout, new DOMException('Release timed out', 'TimeoutError'))),
+  ]);
   state.status = 'releasing';
   forgetRemoteCapabilityEndpoint(ep);
   return state.releasePromise = acknowledgement.then(() => undefined)
