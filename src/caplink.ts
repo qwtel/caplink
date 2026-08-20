@@ -16,6 +16,7 @@ import {
   Message,
   MessageType,
   PostMessageWithOrigin,
+  HandlerWireValue,
   WireValue,
   WireValueType,
   messageChannel,
@@ -402,7 +403,7 @@ const proxyTransferHandler = {
         port = ep[adoptNative](port);
       }
     } else {
-      const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
+      const { port1, port2 } = ep[messageChannel]?.() ?? new MessageChannel();
       expose(obj, port1);
       port = port2;
     }
@@ -431,6 +432,18 @@ const proxyTransferHandler = {
     return remote;
   },
 } satisfies TransferHandler<ProxyValue, ProxyWireValue>;
+
+function toProxyWireValue(value: ProxyValue, ep: Endpoint): TransferableTuple<WireValue> {
+  const [{ capability, port }, transfer] = proxyTransferHandler.serialize(value, ep);
+  return [{ type: WireValueType.HANDLER, name: "proxy", value: port, capability }, transfer];
+}
+
+function fromProxyWireValue(value: HandlerWireValue, ep: Endpoint) {
+  return proxyTransferHandler.deserialize({
+    capability: value.capability,
+    port: value.value as MessagePort,
+  }, ep);
+}
 
 const tupleTransferHandler = {
   canHandle: (value): value is unknown[] => (
@@ -466,6 +479,11 @@ function serializeMarkedContainer<T>(value: object, serialize: () => Transferabl
 
 interface ThrownValue {
   [throwMarker]: unknown; // just needs to be present
+  value: unknown;
+}
+
+interface SerializedThrownValue {
+  isError: boolean;
   value: unknown;
 }
 
@@ -507,9 +525,16 @@ function finishEndpoint(ep: Endpoint, state: EndpointState, failure?: Error | st
 const throwTransferHandler = {
   canHandle: (value): value is ThrownValue => throwMarker in value,
   serialize({ value }) {
-    return [value, []];
+    return [{ isError: value instanceof Error, value }, []];
   },
-  deserialize(value: unknown) {
+  deserialize({ isError, value }) {
+    if (isError && !(value instanceof Error)) {
+      const serialized = isObject(value) ? value : {};
+      const message = 'message' in serialized && typeof serialized.message === 'string'
+        ? serialized.message
+        : '';
+      value = Object.assign(new Error(message), serialized);
+    }
     // HACK: fix for tjs errors..
     if (value instanceof Error) {
       if (!value.stack || !value.stack.startsWith('    at')) throw value;
@@ -517,7 +542,7 @@ const throwTransferHandler = {
     }
     throw value;
   },
-} satisfies TransferHandler<ThrownValue, any>;
+} satisfies TransferHandler<ThrownValue, SerializedThrownValue>;
 
 /**
  * Allows customizing the serialization of certain values.
@@ -852,7 +877,7 @@ function createProxy<T>(
       throwIfProxyReleased(ep);
       const last = path[path.length - 1];
       if (last === createEndpoint) {
-        const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
+        const { port1, port2 } = ep[messageChannel]?.() ?? new MessageChannel();
         requestResponseMessage(ep, {
           type: MessageType.ENDPOINT,
           value: port2,
@@ -981,6 +1006,9 @@ function toWireValue(this: Endpoint, value: unknown): TransferableTuple<WireValu
   if (isReceiver(value)) {
     for (const [name, handler] of transferHandlers) {
       if (handler.canHandle(value, this)) {
+        if (handler === proxyTransferHandler) {
+          return toProxyWireValue(value as ProxyValue, this);
+        }
         const [serializedValue, transfer] = handler.serialize(value, this);
         return [
           {
@@ -1004,8 +1032,12 @@ function toWireValue(this: Endpoint, value: unknown): TransferableTuple<WireValu
 
 function fromWireValue(this: Endpoint, value: WireValue): any {
   switch (value.type) {
-    case WireValueType.HANDLER:
-      return transferHandlers.get(value.name)!.deserialize(value.value, this);
+    case WireValueType.HANDLER: {
+      const handler = transferHandlers.get(value.name)!;
+      return handler === proxyTransferHandler
+        ? fromProxyWireValue(value, this)
+        : handler.deserialize(value.value, this);
+    }
     case WireValueType.RAW:
       return value.value;
   }

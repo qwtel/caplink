@@ -24,7 +24,7 @@ export interface PostMessageWithOrigin {
 export interface Endpoint extends MessageEventTarget {
   postMessage(message: any, transfer?: Transferable[]|StructuredSerializeOptions): void;
   start?: () => void;
-  [messageChannel]?: typeof MessageChannel;
+  [messageChannel]?: () => MessageChannel;
   [adoptNative]?: (port: MessagePort) => MessagePort;
   [toNative]?: () => MessagePort;
   [Symbol.dispose]?: () => void;
@@ -50,6 +50,8 @@ export interface HandlerWireValue {
   type: WireValueType.HANDLER;
   name: string;
   value: unknown;
+  /** Caplink identity metadata. */
+  capability?: string;
 }
 
 export type WireValue = RawWireValue | HandlerWireValue;
