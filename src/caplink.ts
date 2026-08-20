@@ -18,7 +18,6 @@ import {
   PostMessageWithOrigin,
   WireValue,
   WireValueType,
-  MessageId,
   messageChannel,
   toNative,
   adoptNative,
@@ -82,48 +81,112 @@ interface Proxy {
 }
 
 type ProxyValue = Proxy | ProxyMarked | Function;
+type CapabilityId = string;
+type RequestId = number;
 
 interface ProxyWireValue {
   /** Opaque identity assigned by the realm that owns the capability. */
-  capability?: string;
+  capability?: CapabilityId;
   port: MessagePort;
 }
 
-const localCapabilityIds = new WeakMap<ProxyValue, string>();
-const localCapabilities = new Map<string, ProxyValue>();
-const remoteCapabilityIds = new WeakMap<object|Function, string>();
+interface ExportEntry {
+  readonly value: object;
+  readonly exposures: Set<Endpoint>;
+}
+
+const localCapabilityIds = new WeakMap<object, CapabilityId>();
+const localCapabilities = new Map<CapabilityId, ExportEntry>();
+const exposures = new WeakMap<Endpoint, ExportEntry>();
+const exposedEndpoints = new WeakSet<Endpoint>();
+
 // Capability IDs are realm-wide. A capability may arrive through the main
 // endpoint, a callback endpoint, or another capability endpoint and must keep
 // the same JavaScript identity across all of them.
-const remoteCapabilities = new Map<string, WeakRef<Proxy>>();
+const remoteCapabilityIds = new WeakMap<object, CapabilityId>();
+const remoteCapabilities = new Map<CapabilityId, WeakRef<Proxy>>();
+const remoteCapabilityEndpoints = new WeakMap<Endpoint, CapabilityId>();
+
+function deleteRemoteCapability(capability: CapabilityId, reference?: WeakRef<Proxy>) {
+  if (!reference || remoteCapabilities.get(capability) === reference) {
+    remoteCapabilities.delete(capability);
+  }
+}
+
 const remoteCapabilityFinalizers = 'FinalizationRegistry' in globalThis
-  ? new FinalizationRegistry<readonly [string, WeakRef<Proxy>]>(([capability, reference]) => {
-      if (remoteCapabilities.get(capability) === reference) remoteCapabilities.delete(capability);
+  ? new FinalizationRegistry<readonly [CapabilityId, WeakRef<Proxy>]>(([capability, reference]) => {
+      deleteRemoteCapability(capability, reference);
     })
   : undefined;
+
+function capabilityId(value: object) {
+  let capability = localCapabilityIds.get(value);
+  if (!capability) {
+    capability = crypto.randomUUID();
+    localCapabilityIds.set(value, capability);
+  }
+  if (!localCapabilities.has(capability)) localCapabilities.set(capability, { value, exposures: new Set() });
+  return capability;
+}
+
+function addExposure(value: object, endpoint: Endpoint) {
+  if (exposedEndpoints.has(endpoint)) {
+    throw Error('Endpoint is already exposing another object and cannot be reused.');
+  }
+  const entry = localCapabilities.get(capabilityId(value))!;
+  entry.exposures.add(endpoint);
+  exposures.set(endpoint, entry);
+  exposedEndpoints.add(endpoint);
+}
+
+async function releaseExposure(endpoint: Endpoint) {
+  const entry = exposures.get(endpoint);
+  if (!entry) return;
+  exposures.delete(endpoint);
+  entry.exposures.delete(endpoint);
+  if (entry.exposures.size === 0) {
+    const capability = localCapabilityIds.get(entry.value);
+    if (capability && localCapabilities.get(capability) === entry) localCapabilities.delete(capability);
+    await runCapabilityDisposers(entry.value);
+  }
+}
+
+function importedProxy(capability: CapabilityId) {
+  const reference = remoteCapabilities.get(capability);
+  const proxy = reference?.deref();
+  if (reference && !proxy) deleteRemoteCapability(capability, reference);
+  return proxy;
+}
+
+function addRemoteCapability(capability: CapabilityId, proxy: Proxy, endpoint: Endpoint) {
+  const reference = new WeakRef(proxy);
+  remoteCapabilityIds.set(proxy, capability);
+  remoteCapabilities.set(capability, reference);
+  remoteCapabilityEndpoints.set(endpoint, capability);
+  remoteCapabilityFinalizers?.register(proxy, [capability, reference], proxy);
+}
 
 function forgetRemoteCapability(proxy: object) {
   const capability = remoteCapabilityIds.get(proxy);
   if (capability && remoteCapabilities.get(capability)?.deref() === proxy) {
-    remoteCapabilities.delete(capability);
+    deleteRemoteCapability(capability);
   }
+  remoteCapabilityIds.delete(proxy);
   remoteCapabilityFinalizers?.unregister(proxy);
 }
-const exposedEndpoints = new WeakSet<Endpoint>();
+
+function forgetRemoteCapabilityEndpoint(endpoint: Endpoint) {
+  const capability = remoteCapabilityEndpoints.get(endpoint);
+  if (capability) {
+    deleteRemoteCapability(capability);
+    remoteCapabilityEndpoints.delete(endpoint);
+  }
+}
+
 const forbiddenPathMembers = new Set<PropertyKey>([
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__',
   '__proto__', 'arguments', 'caller', 'constructor', 'prototype',
 ]);
-
-function capabilityId(value: ProxyValue) {
-  let id = localCapabilityIds.get(value);
-  if (!id) {
-    id = crypto.randomUUID();
-    localCapabilityIds.set(value, id);
-  }
-  localCapabilities.set(id, value);
-  return id;
-}
 
 /**
  * Takes a type and wraps it in a Promise, if it not already is one.
@@ -344,16 +407,14 @@ const proxyTransferHandler = {
     return [{ capability, port }, [port]];
   },
   deserialize({ capability, port }, ep) {
-    const local = capability && exposedEndpoints.has(ep)
-      ? localCapabilities.get(capability)
-      : undefined;
+    const local = capability ? localCapabilities.get(capability)?.value : undefined;
     if (local) {
       // The capability completed a round trip. Return the original object and
       // close the redundant forwarding endpoint created by `createEndpoint`.
       port.close();
-      return local;
+      return local as ProxyValue;
     }
-    const cached = capability && remoteCapabilities.get(capability)?.deref();
+    const cached = capability && importedProxy(capability);
     if (cached) {
       // Repeatedly sending the same capability must preserve object identity,
       // just as passing the same object repeatedly within one realm does.
@@ -363,10 +424,7 @@ const proxyTransferHandler = {
     port.start();
     const remote = wrap(port) as Proxy;
     if (capability) {
-      remoteCapabilityIds.set(remote, capability);
-      const reference = new WeakRef(remote);
-      remoteCapabilities.set(capability, reference);
-      remoteCapabilityFinalizers?.register(remote, [capability, reference], remote);
+      addRemoteCapability(capability, remote, port);
     }
     return remote;
   },
@@ -411,12 +469,35 @@ interface ThrownValue {
 
 type ResolversMap<K, V> = Map<K, Omit<PromiseWithResolvers<V>, 'promise'>>;
 
-interface EndpointState { 
-  readonly resolvers: ResolversMap<MessageId, WireValue>;
-  readonly messageHandler: (ev: MessageEvent<WireValue|null>) => void;
-};
+type EndpointStatus = 'open' | 'releasing' | 'broken' | 'closed';
 
-const endpointState = new WeakMap<Endpoint, EndpointState>;
+interface EndpointState {
+  readonly resolvers: ResolversMap<RequestId, WireValue>;
+  readonly listeners: AbortController;
+  status: EndpointStatus;
+  nextRequestId: number;
+  proxyCount: number;
+  owned: boolean;
+  failure?: Error | string;
+  releasePromise?: Promise<void>;
+}
+
+const endpointState = new WeakMap<Endpoint, EndpointState>();
+
+function rejectPending(state: EndpointState, error: unknown) {
+  for (const { reject } of state.resolvers.values()) reject(error);
+  state.resolvers.clear();
+}
+
+function finishEndpoint(ep: Endpoint, state: EndpointState, failure?: Error | string) {
+  if (state.status === 'closed' || state.status === 'broken') return;
+  state.status = failure ? 'broken' : 'closed';
+  state.failure = failure ?? 'released';
+  rejectPending(state, failure instanceof Error ? failure : new Error(failure ?? 'Endpoint released'));
+  state.listeners.abort();
+  forgetRemoteCapabilityEndpoint(ep);
+  disposeEndpoint(ep, state.owned);
+}
 
 /**
  * Internal transfer handler to handle thrown exceptions.
@@ -480,26 +561,18 @@ function resolvePath(object: any, path: readonly PropertyKey[]) {
   return path.reduce((value, property) => value[property], object);
 }
 
-/** Keeping track of how many times an object was exposed. */
-const objectCounter = new WeakMap<object, number>();
-
-/** Decrease an exposed objects's ref counter and potentially run its cleanup code. */
-async function finalizeObject(obj: any) {
-  const newCount = (objectCounter.get(obj) || 0) - 1;
-  objectCounter.set(obj, newCount);
-  if (newCount === 0) {
-    const capability = localCapabilityIds.get(obj);
-    if (capability) localCapabilities.delete(capability);
-    // Run finalizers before sending message so caller can be sure that resources are freed up
-    if ('dispose' in Symbol && Symbol.dispose in obj) {
-      obj[Symbol.dispose]();
-    }
-    if ('asyncDispose' in Symbol && Symbol.asyncDispose in obj) {
-      await obj[Symbol.asyncDispose]();
-    }
-    if (finalizer in obj && typeof obj[finalizer] === "function") {
-      obj[finalizer]();
-    }
+async function runCapabilityDisposers(value: object): Promise<void> {
+  const disposable = value as any;
+  // Run finalizers before acknowledging RELEASE so the caller knows that the
+  // exported resource has actually been freed.
+  if ('dispose' in Symbol && Symbol.dispose in disposable) {
+    disposable[Symbol.dispose]();
+  }
+  if ('asyncDispose' in Symbol && Symbol.asyncDispose in disposable) {
+    await disposable[Symbol.asyncDispose]();
+  }
+  if (finalizer in disposable && typeof disposable[finalizer] === 'function') {
+    disposable[finalizer]();
   }
 }
 
@@ -508,10 +581,15 @@ export function expose(
   ep: Endpoint = globalThis as any,
   allowedOrigins: (string | RegExp)[] = ["*"]
 ) {
-  if (exposedEndpoints.has(ep)) throw Error("Endpoint is already exposing another object and cannot be reused.");
-  exposedEndpoints.add(ep);
-  objectCounter.set(object, (objectCounter.get(object) || 0) + 1);
-  ep.addEventListener("message", async function callback(ev: MessageEvent<unknown>): Promise<void> {
+  addExposure(object, ep);
+  const listeners = new AbortController();
+  const endpointClosed = () => {
+    listeners.abort();
+    void releaseExposure(ep).catch((error) => {
+      import.meta.env?.DEV && console.error('Caplink capability disposal failed', error);
+    });
+  };
+  const callback = async (ev: MessageEvent<unknown>): Promise<void> => {
     const obj = object as any;
     if (!ev || !ev.data || !isOurMessage(ev.data)) {
       return;
@@ -563,8 +641,7 @@ export function expose(
           break;
         case MessageType.RELEASE:
           {
-            returnValue = undefined;
-            finalizeObject(obj);
+            returnValue = releaseExposure(ep);
           }
           break;
         default:
@@ -597,23 +674,16 @@ export function expose(
       finally {
         if (type === MessageType.RELEASE) {
           // detach and deactivate after sending release response above.
-          ep.removeEventListener("message", callback);
-          ep.removeEventListener("close", listener);
-          ep.removeEventListener("error", listener);
+          listeners.abort();
           closeEndpoint(ep);
         }
       }
     }
-  });
-  // If the endpoint gets closed on us without a release message, we treat it the same so as not to prevent resource cleanup.
-  // At most one of close and error should be handled so as not to falsify the object count.
-  const listener = () => {
-    finalizeObject(object);
-    ep.removeEventListener("close", listener);
-    ep.removeEventListener("error", listener);
   };
-  ep.addEventListener('close', listener);
-  ep.addEventListener('error', listener);
+  ep.addEventListener('message', callback, { signal: listeners.signal });
+  // If the endpoint gets closed on us without a release message, we treat it the same so as not to prevent resource cleanup.
+  ep.addEventListener('close', endpointClosed, { signal: listeners.signal });
+  ep.addEventListener('error', endpointClosed, { signal: listeners.signal });
   ep.start?.();
 }
 
@@ -642,58 +712,48 @@ function disposeEndpoint(endpoint: Endpoint, owned = false) {
 }
 
 export function wrap<T>(ep: Endpoint, target?: object|null, options: WrapOptions = {}): Remote<T> {
-  return createProxy<T>(ep, [], target, options) as any;
+  setupEndpoint(ep, options.owned ?? false);
+  return createProxy<T>(ep, [], target) as any;
 }
 
-function throwIfProxyReleased(isReleased: boolean|string|Error) {
-  if (isReleased) {
-    throw new Error(
-      "Proxy has been released and is not useable" + (typeof isReleased === 'string' ? `: ${isReleased}` : ''),
-      isReleased instanceof Error ? { cause: isReleased } : {},
-    );
-  }
+function throwIfProxyReleased(ep: Endpoint) {
+  const state = endpointState.get(ep);
+  if (state?.status === 'open') return;
+  const failure = state?.failure;
+  throw new Error(
+    `Proxy has been released and is not useable${failure ? `: ${String(failure)}` : ''}`,
+    failure instanceof Error ? { cause: failure } : {},
+  );
 }
 
-async function releaseEndpoint(ep: Endpoint, force = false, owned = false) {
-  if (endpointState.has(ep)) {
-    const { resolvers, messageHandler } = endpointState.get(ep)!;
-    try {
-      const releasedPromise = !force && requestResponseMessage(ep, { type: MessageType.RELEASE });
-      endpointState.delete(ep); // prevent reentry
-      await releasedPromise; // now save to await
-    } finally {
-      // Error all pending promises:
-      resolvers.forEach(({ reject }) => reject(new DOMException('Cancelled due to endpoint release', 'AbortError')))
-      resolvers.clear();
-      ep.removeEventListener("message", messageHandler);
-      disposeEndpoint(ep, owned);
-    }
-  }
+function releaseEndpoint(ep: Endpoint): Promise<void> {
+  const state = endpointState.get(ep);
+  if (!state || state.status === 'closed' || state.status === 'broken') return Promise.resolve();
+  if (state.releasePromise) return state.releasePromise;
+
+  const acknowledgement = requestResponseMessage(ep, { type: MessageType.RELEASE })
+    .then(fromWireValue.bind(ep));
+  state.status = 'releasing';
+  forgetRemoteCapabilityEndpoint(ep);
+  return state.releasePromise = acknowledgement.then(() => undefined)
+    .finally(() => finishEndpoint(ep, state));
 }
 
-type ProxyFinalizationHeldValue = [ep: Endpoint, owned: boolean];
-
-async function finalizeProxy([ep, owned]: ProxyFinalizationHeldValue) {
-  const newCount = (proxyCounter.get(ep) || 0) - 1;
-  proxyCounter.set(ep, newCount);
-  if (newCount === 0) {
-    await releaseEndpoint(ep, undefined, owned);
-  }
-}
-
-const proxyCounter = new WeakMap<Endpoint, number>();
 const proxyFinalizers = "FinalizationRegistry" in globalThis
-  ? new FinalizationRegistry(finalizeProxy)
+  ? new FinalizationRegistry<Endpoint>((ep) => {
+      const state = endpointState.get(ep);
+      if (state && --state.proxyCount === 0) void releaseEndpoint(ep).catch(() => {});
+    })
   : undefined;
 
-function registerProxy(proxy: object, [ep, owned]: ProxyFinalizationHeldValue) {
-  const newCount = (proxyCounter.get(ep) || 0) + 1;
-  proxyCounter.set(ep, newCount);
-  proxyFinalizers?.register(proxy, [ep, owned], proxy);
+function registerProxy(proxy: object, ep: Endpoint) {
+  if (!proxyFinalizers) return;
+  endpointState.get(ep)!.proxyCount += 1;
+  proxyFinalizers.register(proxy, ep, proxy);
 }
 
-function unregisterProxy(proxy: object) {
-  proxyFinalizers?.unregister(proxy);
+function unregisterProxy(proxy: object, ep: Endpoint) {
+  if (proxyFinalizers?.unregister(proxy)) endpointState.get(ep)!.proxyCount -= 1;
 }
 
 export interface WrapOptions {
@@ -704,12 +764,25 @@ export interface WrapOptions {
   owned?: boolean;
 }
 
-function setupEndpoint(ep: Endpoint) {
-  if (endpointState.has(ep)) return;
-  const resolvers = new Map();
-  const messageHandler = makeMessageHandler(resolvers);
-  endpointState.set(ep, { resolvers, messageHandler });
-  ep.addEventListener("message", messageHandler);
+function setupEndpoint(ep: Endpoint, owned = false) {
+  const existing = endpointState.get(ep);
+  if (existing) {
+    if (owned) existing.owned = true;
+    return;
+  }
+
+  const listeners = new AbortController();
+  const state: EndpointState = {
+    resolvers: new Map(), listeners, status: 'open', nextRequestId: 0, proxyCount: 0, owned,
+  };
+  endpointState.set(ep, state);
+  ep.addEventListener('message', makeMessageHandler(state.resolvers), { signal: listeners.signal });
+  ep.addEventListener('close', (ev: CloseEvent) => {
+    finishEndpoint(ep, state, ev.reason || 'Endpoint closed');
+  }, { signal: listeners.signal });
+  ep.addEventListener('error', (ev: ErrorEvent) => {
+    finishEndpoint(ep, state, ev.error instanceof Error ? ev.error : 'Endpoint errored');
+  }, { signal: listeners.signal });
   ep.start?.();
 }
 
@@ -717,29 +790,25 @@ function createProxy<T>(
   ep: Endpoint,
   path: PropertyKey[] = [],
   target?: object|null,
-  { owned = false }: WrapOptions = {},
 ): Remote<T> {
-  let isProxyReleased: boolean|string|Error = false;
-  setupEndpoint(ep);
   const proxy = new Proxy(target ?? function () {}, {
     get(_target, prop) {
-      if (prop === Symbol.dispose || prop === releaseProxy) {
+      if (prop === Symbol.dispose) {
         return () => {
-          isProxyReleased = true;
+          unregisterProxy(proxy, ep);
           forgetRemoteCapability(proxy);
-          unregisterProxy(proxy);
-          releaseEndpoint(ep, false, owned).catch(() => {}) // Can't await result in sync disposal. Error will be suppressed
+          // Synchronous disposal cannot observe an asynchronous release error.
+          void releaseEndpoint(ep).catch(() => {});
         };
       }
-      if (prop === Symbol.asyncDispose) {
+      if (prop === Symbol.asyncDispose || prop === releaseProxy) {
         return async () => {
-          isProxyReleased = true;
+          unregisterProxy(proxy, ep);
           forgetRemoteCapability(proxy);
-          unregisterProxy(proxy);
-          await releaseEndpoint(ep, false, owned);
+          await releaseEndpoint(ep);
         };
       }
-      throwIfProxyReleased(isProxyReleased);
+      throwIfProxyReleased(ep);
       if (prop === "then") {
         if (path.length === 0) {
           return { then: () => proxy };
@@ -753,7 +822,7 @@ function createProxy<T>(
       return createProxy(ep, [...path, prop]);
     },
     set(_target, prop, rawValue) {
-      throwIfProxyReleased(isProxyReleased);
+      throwIfProxyReleased(ep);
       // FIXME: ES6 Proxy Handler `set` methods are supposed to return a
       // boolean. To show good will, we return true asynchronously ¯\_(ツ)_/¯
       const [value, transfer] = toWireValue.call(ep, rawValue);
@@ -768,7 +837,7 @@ function createProxy<T>(
       ).then(fromWireValue.bind(ep)) as any;
     },
     apply(_target, _thisArg, rawArgumentList) {
-      throwIfProxyReleased(isProxyReleased);
+      throwIfProxyReleased(ep);
       const last = path[path.length - 1];
       if (last === createEndpoint) {
         const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
@@ -808,7 +877,7 @@ function createProxy<T>(
       ).then(fromWireValue.bind(ep));
     },
     construct(_target, rawArgumentList) {
-      throwIfProxyReleased(isProxyReleased);
+      throwIfProxyReleased(ep);
       const [argumentList, transfer] = processTuple(rawArgumentList, ep);
       return requestResponseMessage(
         ep,
@@ -821,7 +890,7 @@ function createProxy<T>(
       ).then(fromWireValue.bind(ep));
     },
     has(_target, prop) {
-      throwIfProxyReleased(isProxyReleased);
+      throwIfProxyReleased(ep);
       // Can only check for known local properties, the rest can only be determined asynchronously, so we can only return `false` in that case.
       return (
         prop === Symbol.dispose || 
@@ -833,28 +902,7 @@ function createProxy<T>(
     }
   });
 
-  // XXX: Disabled due to difficulty cleaning up the event listeners.
-  // // If the endpoint gets closed on us, we should mark the proxy as released and reject all pending promises.
-  // // This shouldn't really happen since the proxy must be closed from this side, either through manual dispose or finalization registry.
-  // // Also note that support for the `close` event is unclear (MDN doesn't document it, spec says it should be there...), so this is a last resort.
-  // const closeHandler = async (ev: CloseEvent) => {
-  //   isProxyReleased = ev.reason ?? 'closed';
-  //   unregisterProxy(proxy);
-  //   // Passing the force flag to skip sending a release message, since the endpoint is already closed.
-  //   await releaseEndpoint(ep, true, owned);
-  // };
-
-  // // Similarly, if the endpoint errors for any reason, we should mark the proxy as released and reject all pending promises.
-  // const errorHandler =  async (ev: ErrorEvent) => {
-  //   isProxyReleased = ev.error instanceof Error ? ev.error : 'errored';
-  //   unregisterProxy(proxy);
-  //   await releaseEndpoint(ep, true, owned);
-  // };
-
-  // ep.addEventListener("close", closeHandler);
-  // ep.addEventListener("error", errorHandler);
-
-  registerProxy(proxy, [ep, owned]);
+  registerProxy(proxy, ep);
   return proxy as any;
 }
 
@@ -951,15 +999,11 @@ function fromWireValue(this: Endpoint, value: WireValue): any {
   }
 }
 
-const makeMessageHandler = (resolverMap: ResolversMap<MessageId, WireValue>) => (ev: MessageEvent<WireValue|null>) => {
+const makeMessageHandler = (resolverMap: ResolversMap<RequestId, WireValue>) => (ev: MessageEvent<WireValue|null>) => {
   const { data } = ev;
-  if (!data?.id) {
-    return;
-  }
+  if (typeof data?.id !== 'number') return;
   const resolvers = resolverMap.get(data.id);
-  if (!resolvers) {
-    return;
-  }
+  if (!resolvers) return;
   resolverMap.delete(data.id);
   resolvers.resolve(data);
 }
@@ -969,20 +1013,17 @@ function requestResponseMessage(
   msg: Message,
   transfer?: Transferable[]
 ): Promise<WireValue> {
+  throwIfProxyReleased(ep);
+  const state = endpointState.get(ep)!;
   const { promise, resolve, reject } = Promise.withResolvers<WireValue>();
-  const id = generateId();
+  const id = ++state.nextRequestId;
   msg.id = id;
-  const resolvers = endpointState.get(ep)?.resolvers;
-  resolvers?.set(id, { resolve, reject });
+  state.resolvers.set(id, { resolve, reject });
   try {
     ep.postMessage(msg, transfer);
   } catch (error) {
-    resolvers?.delete(id);
+    state.resolvers.delete(id);
     reject(error);
   }
   return promise;
-}
-
-function generateId(): MessageId {
-  return Math.random() * 2**32 >>> 0;
 }
