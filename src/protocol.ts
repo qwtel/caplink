@@ -24,7 +24,7 @@ export interface PostMessageWithOrigin {
 export interface Endpoint extends MessageEventTarget {
   postMessage(message: any, transfer?: Transferable[]|StructuredSerializeOptions): void;
   start?: () => void;
-  [messageChannel]?: () => MessageChannel;
+  [messageChannel]?: typeof MessageChannel;
   [adoptNative]?: (port: MessagePort) => MessagePort;
   [toNative]?: () => MessagePort;
   [Symbol.dispose]?: () => void;

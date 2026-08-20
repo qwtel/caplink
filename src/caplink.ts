@@ -403,7 +403,7 @@ const proxyTransferHandler = {
         port = ep[adoptNative](port);
       }
     } else {
-      const { port1, port2 } = ep[messageChannel]?.() ?? new MessageChannel();
+      const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
       expose(obj, port1);
       port = port2;
     }
@@ -877,7 +877,7 @@ function createProxy<T>(
       throwIfProxyReleased(ep);
       const last = path[path.length - 1];
       if (last === createEndpoint) {
-        const { port1, port2 } = ep[messageChannel]?.() ?? new MessageChannel();
+        const { port1, port2 } = new (ep[messageChannel] ?? MessageChannel)();
         requestResponseMessage(ep, {
           type: MessageType.ENDPOINT,
           value: port2,
