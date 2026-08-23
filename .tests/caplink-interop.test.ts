@@ -141,6 +141,55 @@ describe('Comlink 4.4.2 interoperability', () => {
     }
   });
 
+  it('runs callbacks and nested callbacks concurrently in both interop directions', async () => {
+    const caplinkCallingComlink = connect(Comlink, Caplink, {
+      async invoke(callback: any) {
+        try {
+          return await callback('Comlink:outer', Comlink.proxy((value: string) => `Comlink:nested:${value}`));
+        } finally {
+          callback[Comlink.releaseProxy]();
+        }
+      },
+    });
+    const comlinkCallingCaplink = connect(Caplink, Comlink, {
+      async invoke(callback: any) {
+        try {
+          return await callback('Caplink:outer', (value: string) => `Caplink:nested:${value}`);
+        } finally {
+          await callback[Symbol.asyncDispose]();
+        }
+      },
+    });
+    const caplinkCallback = async (outer: string, nested: any) => {
+      try {
+        return [outer, await nested('value')];
+      } finally {
+        await nested[Symbol.asyncDispose]();
+      }
+    };
+    const comlinkCallback = Comlink.proxy(async (outer: string, nested: any) => {
+      try {
+        return [outer, await nested('value')];
+      } finally {
+        nested[Comlink.releaseProxy]();
+      }
+    });
+
+    try {
+      await expect(Promise.all([
+        caplinkCallingComlink.remote.invoke(caplinkCallback),
+        comlinkCallingCaplink.remote.invoke(comlinkCallback),
+      ])).resolves.toEqual([
+        ['Comlink:outer', 'Comlink:nested:value'],
+        ['Caplink:outer', 'Caplink:nested:value'],
+      ]);
+      await nextTask();
+    } finally {
+      caplinkCallingComlink.close();
+      comlinkCallingCaplink.close();
+    }
+  });
+
   for (const [label, exposer, caller, release] of [
     ['Caplink constructing an upstream class', Comlink, Caplink, Symbol.asyncDispose],
     ['Comlink constructing a Caplink class', Caplink, Comlink, Comlink.releaseProxy],

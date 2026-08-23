@@ -1062,9 +1062,15 @@ function fromWireValue(this: Endpoint, value: WireValue): any {
   }
 }
 
+const isResponse = (value: WireValue | null): value is WireValue & { id: RequestId } => (
+  typeof value?.id === 'number' && Object.hasOwn(value, 'value') && (
+    value.type === WireValueType.RAW || (value.type === WireValueType.HANDLER && transferHandlers.has(value.name))
+  )
+);
+
 const makeMessageHandler = (resolverMap: ResolversMap<RequestId, WireValue>) => (ev: MessageEvent<WireValue|null>) => {
   const { data } = ev;
-  if (typeof data?.id !== 'number' || (data.type !== WireValueType.RAW && data.type !== WireValueType.HANDLER)) return;
+  if (!isResponse(data)) return;
   const resolvers = resolverMap.get(data.id);
   if (!resolvers) return;
   resolverMap.delete(data.id);
