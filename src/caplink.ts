@@ -94,23 +94,20 @@ interface ProxyWireValue {
 }
 
 interface ExportEntry {
+  readonly capability: CapabilityId;
   readonly value: object;
-  readonly exposures: Set<Endpoint>;
+  exposures: number;
 }
 
 // Capability IDs are realm-wide. A capability may arrive through the main
 // endpoint, a callback endpoint, or another capability endpoint and must keep
 // the same JavaScript identity across all of them.
 class CapabilityRegistry {
-  private static readonly localCapIds = new WeakMap<object, CapabilityId>();
+  private static readonly localCapEntries = new WeakMap<object, ExportEntry>();
   private static readonly localCaps = new Map<CapabilityId, ExportEntry>();
-
   private static readonly exposures = new WeakMap<Endpoint, ExportEntry>();
-  private static readonly exposedEndpoints = new WeakSet<Endpoint>();
-
   private static readonly remoteCapIds = new WeakMap<object, CapabilityId>();
   private static readonly remoteCaps = new Map<CapabilityId, WeakRef<Proxy>>();
-  private static readonly remoteCapEndpoints = new WeakMap<Endpoint, CapabilityId>();
   private static readonly remoteCapFinalizers = 'FinalizationRegistry' in globalThis
     ? new FinalizationRegistry<readonly [CapabilityId, WeakRef<Proxy>]>(([capability, reference]) => {
         this.#deleteRemote(capability, reference);
@@ -125,37 +122,36 @@ class CapabilityRegistry {
     }
   }
 
+  static #getLocalEntry(value: object) {
+    let entry = this.localCapEntries.get(value);
+    if (!entry) {
+      entry = { capability: crypto.randomUUID(), value, exposures: 0 };
+      this.localCapEntries.set(value, entry);
+    }
+    this.localCaps.set(entry.capability, entry);
+    return entry;
+  }
+
   static getId(value: object) {
-    let capability = this.localCapIds.get(value);
-    if (!capability) {
-      capability = crypto.randomUUID();
-      this.localCapIds.set(value, capability);
-    }
-    if (!this.localCaps.has(capability)) {
-      this.localCaps.set(capability, { value, exposures: new Set() });
-    }
-    return capability;
+    return this.#getLocalEntry(value).capability;
   }
 
   static expose(value: object, endpoint: Endpoint) {
-    if (this.exposedEndpoints.has(endpoint)) {
+    if (this.exposures.has(endpoint)) {
       throw Error('Endpoint is already exposing another object and cannot be reused.');
     }
-    const entry = this.localCaps.get(this.getId(value))!;
-    entry.exposures.add(endpoint);
+    const entry = this.#getLocalEntry(value);
+    entry.exposures += 1;
     this.exposures.set(endpoint, entry);
-    this.exposedEndpoints.add(endpoint);
   }
 
   static async release(endpoint: Endpoint) {
     const entry = this.exposures.get(endpoint);
     if (!entry) return;
     this.exposures.delete(endpoint);
-    entry.exposures.delete(endpoint);
-    if (entry.exposures.size === 0) {
-      const capability = this.localCapIds.get(entry.value);
-      if (capability && this.localCaps.get(capability) === entry) {
-        this.localCaps.delete(capability);
+    if (--entry.exposures === 0) {
+      if (this.localCaps.get(entry.capability) === entry) {
+        this.localCaps.delete(entry.capability);
       }
       await runDisposers(entry.value);
     }
@@ -180,7 +176,7 @@ class CapabilityRegistry {
     const reference = new WeakRef(proxy);
     this.remoteCapIds.set(proxy, capability);
     this.remoteCaps.set(capability, reference);
-    this.remoteCapEndpoints.set(endpoint, capability);
+    endpointState.get(endpoint)!.capability = capability;
     this.remoteCapFinalizers?.register(proxy, [capability, reference], proxy);
   }
 
@@ -194,10 +190,10 @@ class CapabilityRegistry {
   }
 
   static forgetEndpoint(endpoint: Endpoint) {
-    const capability = this.remoteCapEndpoints.get(endpoint);
-    if (capability) {
-      this.#deleteRemote(capability);
-      this.remoteCapEndpoints.delete(endpoint);
+    const state = endpointState.get(endpoint);
+    if (state?.capability) {
+      this.#deleteRemote(state.capability);
+      delete state.capability;
     }
   }
 }
@@ -514,6 +510,7 @@ interface EndpointState {
   nextRequestId: number;
   proxyCount: number;
   owned: boolean;
+  capability?: CapabilityId;
   failure?: Error | string;
   releasePromise?: Promise<void>;
 }
