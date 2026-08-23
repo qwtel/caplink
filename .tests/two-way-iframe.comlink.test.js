@@ -11,30 +11,33 @@
  * limitations under the License.
  */
 
-import * as Comlink from "/base/dist/esm/comlink.mjs";
+import { beforeEach, describe, expect, it } from "bun:test";
+
+import * as Comlink from "../src/caplink.ts";
+import { windowEndpoints } from "./fixtures/window.js";
 
 describe("Comlink across iframes", function () {
-  beforeEach(function () {
-    this.ifr = document.createElement("iframe");
-    this.ifr.sandbox.add("allow-scripts", "allow-same-origin");
-    this.ifr.src = "/base/tests/fixtures/two-way-iframe.html";
-    document.body.appendChild(this.ifr);
-    return new Promise((resolve) => (this.ifr.onload = resolve));
-  });
+  let parentEndpoint;
+  let childEndpoint;
 
-  afterEach(function () {
-    this.ifr.remove();
+  beforeEach(function () {
+    const { parentWindow, childWindow, parentEvents, childEvents } = windowEndpoints();
+    parentEndpoint = Comlink.windowEndpoint(childWindow, parentEvents);
+    childEndpoint = Comlink.windowEndpoint(parentWindow, childEvents);
   });
 
   it("can communicate both ways", async function () {
     let called = false;
-    const iframe = Comlink.windowEndpoint(this.ifr.contentWindow);
     Comlink.expose((a) => {
       called = true;
       return ++a;
-    }, iframe);
-    const proxy = Comlink.wrap(iframe);
-    expect(await proxy(1, 3)).to.equal(5);
-    expect(called).to.equal(true);
+    }, parentEndpoint);
+    const wrappedParent = Comlink.wrap(childEndpoint);
+    Comlink.expose(async (a, b) => a + await wrappedParent(b), childEndpoint);
+    const proxy = Comlink.wrap(parentEndpoint);
+    expect(await proxy(1, 3)).toBe(5);
+    expect(called).toBe(true);
+    await proxy[Symbol.asyncDispose]();
+    await wrappedParent[Symbol.asyncDispose]();
   });
 });

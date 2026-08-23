@@ -1064,7 +1064,7 @@ function fromWireValue(this: Endpoint, value: WireValue): any {
 
 const makeMessageHandler = (resolverMap: ResolversMap<RequestId, WireValue>) => (ev: MessageEvent<WireValue|null>) => {
   const { data } = ev;
-  if (typeof data?.id !== 'number') return;
+  if (typeof data?.id !== 'number' || (data.type !== WireValueType.RAW && data.type !== WireValueType.HANDLER)) return;
   const resolvers = resolverMap.get(data.id);
   if (!resolvers) return;
   resolverMap.delete(data.id);

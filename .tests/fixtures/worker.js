@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-importScripts("/base/dist/umd/comlink.js");
+import * as Comlink from "../../src/caplink.ts";
 
 const capability = Comlink.proxy({ value: "original" });
 const api = (a, b) => a + b;

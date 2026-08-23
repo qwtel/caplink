@@ -1,5 +1,5 @@
 import { parentPort } from "worker_threads";
-import * as Comlink from "../../dist/esm/comlink.mjs";
-import nodeEndpoint from "../../dist/esm/node-adapter.mjs";
+import * as Comlink from "../../src/caplink.ts";
+import nodeEndpoint from "../../src/node-adapter.ts";
 
 Comlink.expose((a, b) => a + b, nodeEndpoint(parentPort));

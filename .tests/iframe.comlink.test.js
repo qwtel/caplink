@@ -11,23 +11,26 @@
  * limitations under the License.
  */
 
-import * as Comlink from "/base/dist/esm/comlink.mjs";
+import { beforeEach, describe, expect, it } from "bun:test";
+
+import * as Comlink from "../src/caplink.ts";
+import { windowEndpoints } from "./fixtures/window.js";
 
 describe("Comlink across iframes", function () {
-  beforeEach(function () {
-    this.ifr = document.createElement("iframe");
-    this.ifr.sandbox.add("allow-scripts", "allow-same-origin");
-    this.ifr.src = "/base/tests/fixtures/iframe.html";
-    document.body.appendChild(this.ifr);
-    return new Promise((resolve) => (this.ifr.onload = resolve));
-  });
+  let parentEndpoint;
 
-  afterEach(function () {
-    this.ifr.remove();
+  beforeEach(function () {
+    const { parentWindow, childWindow, parentEvents, childEvents } = windowEndpoints();
+    parentEndpoint = Comlink.windowEndpoint(childWindow, parentEvents);
+    Comlink.expose(
+      (a, b) => a + b,
+      Comlink.windowEndpoint(parentWindow, childEvents),
+    );
   });
 
   it("can communicate", async function () {
-    const proxy = Comlink.wrap(Comlink.windowEndpoint(this.ifr.contentWindow));
-    expect(await proxy(1, 3)).to.equal(4);
+    const proxy = Comlink.wrap(parentEndpoint);
+    expect(await proxy(1, 3)).toBe(4);
+    await proxy[Symbol.asyncDispose]();
   });
 });
