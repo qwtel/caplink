@@ -98,91 +98,107 @@ interface ExportEntry {
   readonly exposures: Set<Endpoint>;
 }
 
-const localCapabilityIds = new WeakMap<object, CapabilityId>();
-const localCapabilities = new Map<CapabilityId, ExportEntry>();
-const exposures = new WeakMap<Endpoint, ExportEntry>();
-const exposedEndpoints = new WeakSet<Endpoint>();
-
 // Capability IDs are realm-wide. A capability may arrive through the main
 // endpoint, a callback endpoint, or another capability endpoint and must keep
 // the same JavaScript identity across all of them.
-const remoteCapabilityIds = new WeakMap<object, CapabilityId>();
-const remoteCapabilities = new Map<CapabilityId, WeakRef<Proxy>>();
-const remoteCapabilityEndpoints = new WeakMap<Endpoint, CapabilityId>();
+class CapabilityRegistry {
+  private static readonly localCapIds = new WeakMap<object, CapabilityId>();
+  private static readonly localCaps = new Map<CapabilityId, ExportEntry>();
 
-function deleteRemoteCapability(capability: CapabilityId, reference?: WeakRef<Proxy>) {
-  if (!reference || remoteCapabilities.get(capability) === reference) {
-    remoteCapabilities.delete(capability);
+  private static readonly exposures = new WeakMap<Endpoint, ExportEntry>();
+  private static readonly exposedEndpoints = new WeakSet<Endpoint>();
+
+  private static readonly remoteCapIds = new WeakMap<object, CapabilityId>();
+  private static readonly remoteCaps = new Map<CapabilityId, WeakRef<Proxy>>();
+  private static readonly remoteCapEndpoints = new WeakMap<Endpoint, CapabilityId>();
+  private static readonly remoteCapFinalizers = 'FinalizationRegistry' in globalThis
+    ? new FinalizationRegistry<readonly [CapabilityId, WeakRef<Proxy>]>(([capability, reference]) => {
+        this.#deleteRemote(capability, reference);
+      })
+    : undefined;
+
+  private constructor() {}
+
+  static #deleteRemote(capability: CapabilityId, reference?: WeakRef<Proxy>) {
+    if (!reference || this.remoteCaps.get(capability) === reference) {
+      this.remoteCaps.delete(capability);
+    }
   }
-}
 
-const remoteCapabilityFinalizers = 'FinalizationRegistry' in globalThis
-  ? new FinalizationRegistry<readonly [CapabilityId, WeakRef<Proxy>]>(([capability, reference]) => {
-      deleteRemoteCapability(capability, reference);
-    })
-  : undefined;
-
-function capabilityId(value: object) {
-  let capability = localCapabilityIds.get(value);
-  if (!capability) {
-    capability = crypto.randomUUID();
-    localCapabilityIds.set(value, capability);
+  static getId(value: object) {
+    let capability = this.localCapIds.get(value);
+    if (!capability) {
+      capability = crypto.randomUUID();
+      this.localCapIds.set(value, capability);
+    }
+    if (!this.localCaps.has(capability)) {
+      this.localCaps.set(capability, { value, exposures: new Set() });
+    }
+    return capability;
   }
-  if (!localCapabilities.has(capability)) localCapabilities.set(capability, { value, exposures: new Set() });
-  return capability;
-}
 
-function addExposure(value: object, endpoint: Endpoint) {
-  if (exposedEndpoints.has(endpoint)) {
-    throw Error('Endpoint is already exposing another object and cannot be reused.');
+  static expose(value: object, endpoint: Endpoint) {
+    if (this.exposedEndpoints.has(endpoint)) {
+      throw Error('Endpoint is already exposing another object and cannot be reused.');
+    }
+    const entry = this.localCaps.get(this.getId(value))!;
+    entry.exposures.add(endpoint);
+    this.exposures.set(endpoint, entry);
+    this.exposedEndpoints.add(endpoint);
   }
-  const entry = localCapabilities.get(capabilityId(value))!;
-  entry.exposures.add(endpoint);
-  exposures.set(endpoint, entry);
-  exposedEndpoints.add(endpoint);
-}
 
-async function releaseExposure(endpoint: Endpoint) {
-  const entry = exposures.get(endpoint);
-  if (!entry) return;
-  exposures.delete(endpoint);
-  entry.exposures.delete(endpoint);
-  if (entry.exposures.size === 0) {
-    const capability = localCapabilityIds.get(entry.value);
-    if (capability && localCapabilities.get(capability) === entry) localCapabilities.delete(capability);
-    await runCapabilityDisposers(entry.value);
+  static async release(endpoint: Endpoint) {
+    const entry = this.exposures.get(endpoint);
+    if (!entry) return;
+    this.exposures.delete(endpoint);
+    entry.exposures.delete(endpoint);
+    if (entry.exposures.size === 0) {
+      const capability = this.localCapIds.get(entry.value);
+      if (capability && this.localCaps.get(capability) === entry) {
+        this.localCaps.delete(capability);
+      }
+      await runDisposers(entry.value);
+    }
   }
-}
 
-function importedProxy(capability: CapabilityId) {
-  const reference = remoteCapabilities.get(capability);
-  const proxy = reference?.deref();
-  if (reference && !proxy) deleteRemoteCapability(capability, reference);
-  return proxy;
-}
-
-function addRemoteCapability(capability: CapabilityId, proxy: Proxy, endpoint: Endpoint) {
-  const reference = new WeakRef(proxy);
-  remoteCapabilityIds.set(proxy, capability);
-  remoteCapabilities.set(capability, reference);
-  remoteCapabilityEndpoints.set(endpoint, capability);
-  remoteCapabilityFinalizers?.register(proxy, [capability, reference], proxy);
-}
-
-function forgetRemoteCapability(proxy: object) {
-  const capability = remoteCapabilityIds.get(proxy);
-  if (capability && remoteCapabilities.get(capability)?.deref() === proxy) {
-    deleteRemoteCapability(capability);
+  static getLocal(capability: CapabilityId) {
+    return this.localCaps.get(capability)?.value;
   }
-  remoteCapabilityIds.delete(proxy);
-  remoteCapabilityFinalizers?.unregister(proxy);
-}
 
-function forgetRemoteCapabilityEndpoint(endpoint: Endpoint) {
-  const capability = remoteCapabilityEndpoints.get(endpoint);
-  if (capability) {
-    deleteRemoteCapability(capability);
-    remoteCapabilityEndpoints.delete(endpoint);
+  static getRemoteId(proxy: object) {
+    return this.remoteCapIds.get(proxy);
+  }
+
+  static getRemote(capability: CapabilityId) {
+    const reference = this.remoteCaps.get(capability);
+    const proxy = reference?.deref();
+    if (reference && !proxy) this.#deleteRemote(capability, reference);
+    return proxy;
+  }
+
+  static addRemote(capability: CapabilityId, proxy: Proxy, endpoint: Endpoint) {
+    const reference = new WeakRef(proxy);
+    this.remoteCapIds.set(proxy, capability);
+    this.remoteCaps.set(capability, reference);
+    this.remoteCapEndpoints.set(endpoint, capability);
+    this.remoteCapFinalizers?.register(proxy, [capability, reference], proxy);
+  }
+
+  static forget(proxy: object) {
+    const capability = this.remoteCapIds.get(proxy);
+    if (capability && this.remoteCaps.get(capability)?.deref() === proxy) {
+      this.#deleteRemote(capability);
+    }
+    this.remoteCapIds.delete(proxy);
+    this.remoteCapFinalizers?.unregister(proxy);
+  }
+
+  static forgetEndpoint(endpoint: Endpoint) {
+    const capability = this.remoteCapEndpoints.get(endpoint);
+    if (capability) {
+      this.#deleteRemote(capability);
+      this.remoteCapEndpoints.delete(endpoint);
+    }
   }
 }
 
@@ -392,8 +408,8 @@ const proxyTransferHandler = {
   ),
   serialize(obj, ep) {
     const capability = createEndpoint in obj
-      ? remoteCapabilityIds.get(obj)
-      : capabilityId(obj);
+      ? CapabilityRegistry.getRemoteId(obj)
+      : CapabilityRegistry.getId(obj);
     let port;
     if (createEndpoint in obj) {
       port = obj[createEndpoint]();
@@ -410,14 +426,14 @@ const proxyTransferHandler = {
     return [{ capability, port }, [port]];
   },
   deserialize({ capability, port }, ep) {
-    const local = capability ? localCapabilities.get(capability)?.value : undefined;
+    const local = capability ? CapabilityRegistry.getLocal(capability) : undefined;
     if (local) {
       // The capability completed a round trip. Return the original object and
       // close the redundant forwarding endpoint created by `createEndpoint`.
       port.close();
       return local as ProxyValue;
     }
-    const cached = capability && importedProxy(capability);
+    const cached = capability && CapabilityRegistry.getRemote(capability);
     if (cached) {
       // Repeatedly sending the same capability must preserve object identity,
       // just as passing the same object repeatedly within one realm does.
@@ -427,7 +443,7 @@ const proxyTransferHandler = {
     port.start();
     const remote = wrap(port) as Proxy;
     if (capability) {
-      addRemoteCapability(capability, remote, port);
+      CapabilityRegistry.addRemote(capability, remote, port);
     }
     return remote;
   },
@@ -515,7 +531,7 @@ function finishEndpoint(ep: Endpoint, state: EndpointState, failure?: Error | st
   state.failure = failure ?? 'released';
   rejectPending(state, failure instanceof Error ? failure : new Error(failure ?? 'Endpoint released'));
   state.listeners.abort();
-  forgetRemoteCapabilityEndpoint(ep);
+  CapabilityRegistry.forgetEndpoint(ep);
   disposeEndpoint(ep, state.owned);
 }
 
@@ -588,19 +604,22 @@ function resolvePath(object: any, path: readonly PropertyKey[]) {
   return path.reduce((value, property) => value[property], object);
 }
 
-async function runCapabilityDisposers(value: object): Promise<void> {
+async function runDisposers(value: object): Promise<void> {
   const disposable = value as any;
+  const dispose = 'dispose' in Symbol && Symbol.dispose in disposable
+    ? disposable[Symbol.dispose]
+    : undefined;
+  const asyncDispose = 'asyncDispose' in Symbol && Symbol.asyncDispose in disposable
+    ? disposable[Symbol.asyncDispose]
+    : undefined;
+  const finalize = finalizer in disposable && typeof disposable[finalizer] === 'function'
+    ? disposable[finalizer]
+    : undefined;
   // Run finalizers before acknowledging RELEASE so the caller knows that the
   // exported resource has actually been freed.
-  if ('dispose' in Symbol && Symbol.dispose in disposable) {
-    disposable[Symbol.dispose]();
-  }
-  if ('asyncDispose' in Symbol && Symbol.asyncDispose in disposable) {
-    await disposable[Symbol.asyncDispose]();
-  }
-  if (finalizer in disposable && typeof disposable[finalizer] === 'function') {
-    disposable[finalizer]();
-  }
+  dispose?.call(disposable);
+  await asyncDispose?.call(disposable);
+  finalize?.call(disposable);
 }
 
 export function expose(
@@ -616,11 +635,11 @@ export function expose(
   ) {
     throw new TypeError('Invalid Caplink endpoint');
   }
-  addExposure(object, ep);
+  CapabilityRegistry.expose(object, ep);
   const listeners = new AbortController();
   const endpointClosed = () => {
     listeners.abort();
-    void releaseExposure(ep).catch((error) => {
+    void CapabilityRegistry.release(ep).catch((error) => {
       import.meta.env?.DEV && console.error('Caplink capability disposal failed', error);
     });
   };
@@ -676,7 +695,7 @@ export function expose(
           break;
         case MessageType.RELEASE:
           {
-            returnValue = releaseExposure(ep);
+            returnValue = CapabilityRegistry.release(ep);
           }
           break;
         default:
@@ -771,7 +790,7 @@ function releaseEndpoint(ep: Endpoint): Promise<void> {
     new Promise<never>((_, rej) => setTimeout(rej, releaseConfig.timeout, new DOMException('Release timed out', 'TimeoutError'))),
   ]);
   state.status = 'releasing';
-  forgetRemoteCapabilityEndpoint(ep);
+  CapabilityRegistry.forgetEndpoint(ep);
   return state.releasePromise = acknowledgement.then(() => undefined)
     .finally(() => finishEndpoint(ep, state));
 }
@@ -833,7 +852,7 @@ function createProxy<T>(
       if (prop === Symbol.dispose) {
         return () => {
           unregisterProxy(proxy, ep);
-          forgetRemoteCapability(proxy);
+          CapabilityRegistry.forget(proxy);
           // Synchronous disposal cannot observe an asynchronous release error.
           void releaseEndpoint(ep).catch(() => {});
         };
@@ -841,7 +860,7 @@ function createProxy<T>(
       if (prop === Symbol.asyncDispose || prop === releaseProxy) {
         return async () => {
           unregisterProxy(proxy, ep);
-          forgetRemoteCapability(proxy);
+          CapabilityRegistry.forget(proxy);
           await releaseEndpoint(ep);
         };
       }
