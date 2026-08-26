@@ -27,6 +27,7 @@ export interface Endpoint extends MessageEventTarget {
   [messageChannel]?: typeof MessageChannel;
   [adoptNative]?: (port: MessagePort) => MessagePort;
   [toNative]?: () => MessagePort;
+  [Symbol.dispose]?: () => void;
 }
 
 export const enum WireValueType {
@@ -35,7 +36,6 @@ export const enum WireValueType {
   THROW = "THROW",
   HANDLER = "HANDLER",
 }
-
 
 export type MessageId = string|number;
 
@@ -50,6 +50,8 @@ export interface HandlerWireValue {
   type: WireValueType.HANDLER;
   name: string;
   value: unknown;
+  /** Caplink identity metadata. */
+  capability?: string;
 }
 
 export type WireValue = RawWireValue | HandlerWireValue;

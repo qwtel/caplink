@@ -11,26 +11,39 @@
  * limitations under the License.
  */
 
-import * as Comlink from "/base/dist/esm/comlink.mjs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+
+import * as Comlink from "../src/caplink.ts";
 
 describe("Comlink across workers", function () {
+  let worker;
+
   beforeEach(function () {
-    this.worker = new Worker("/base/tests/fixtures/worker.js");
+    worker = new Worker(new URL("./fixtures/worker.js", import.meta.url), {
+      type: "module",
+    });
   });
 
   afterEach(function () {
-    this.worker.terminate();
+    worker.terminate();
   });
 
   it("can communicate", async function () {
-    const proxy = Comlink.wrap(this.worker);
-    expect(await proxy(1, 3)).to.equal(4);
+    const proxy = Comlink.wrap(worker);
+    expect(await proxy(1, 3)).toBe(4);
+  });
+
+  it("restores a capability passed back to its owning worker", async function () {
+    const proxy = Comlink.wrap(worker);
+    const capability = await proxy.capability();
+    expect(await proxy.isOriginal(capability)).toBe(true);
+    await capability[Symbol.asyncDispose]();
   });
 
   it("can tunnels a new endpoint with createEndpoint", async function () {
-    const proxy = Comlink.wrap(this.worker);
+    const proxy = Comlink.wrap(worker);
     const otherEp = await proxy[Comlink.createEndpoint]();
     const otherProxy = Comlink.wrap(otherEp);
-    expect(await otherProxy(20, 1)).to.equal(21);
+    expect(await otherProxy(20, 1)).toBe(21);
   });
 });
