@@ -548,11 +548,6 @@ const throwTransferHandler = {
         : '';
       value = Object.assign(new Error(message), serialized);
     }
-    // HACK: fix for tjs errors..
-    if (value instanceof Error) {
-      if (!value.stack || !value.stack.startsWith('    at')) throw value;
-      Object.defineProperty(value, 'stack', { value: `Error: ${value.message}\n${value.stack}` });
-    }
     throw value;
   },
 } satisfies TransferHandler<ThrownValue, SerializedThrownValue>;
