@@ -631,8 +631,8 @@ export function expose(
   const listeners = new AbortController();
   const endpointClosed = () => {
     listeners.abort();
-    void CapabilityRegistry.release(ep).catch((error) => {
-      import.meta.env?.DEV && console.error('Caplink capability disposal failed', error);
+    void CapabilityRegistry.release(ep).catch(() => {
+      // The peer has already gone, so cleanup failures cannot be reported to it.
     });
   };
   const callback = async (ev: MessageEvent<unknown>): Promise<void> => {
@@ -702,20 +702,20 @@ export function expose(
       returnValue = { value, [throwMarker]: 0 };
     }
     {
+      const replyEndpoint = (ev.source ?? ep) as Endpoint;
       try {
         const [wireValue, transfer] = toWireValue.call(ep, returnValue);
         wireValue.id = id;
-        (ev.source ?? ep).postMessage(wireValue, { transfer });
+        replyEndpoint.postMessage(wireValue, { transfer });
       }
-      catch (err) {
-        import.meta.env?.DEV && console.error(err);
+      catch {
         // Send Serialization Error To Caller
         const [wireValue, transfer] = toWireValue.call(ep, {
           value: new TypeError("Unserializable return value"),
           [throwMarker]: 0,
         });
         wireValue.id = id;
-        (ev.source ?? ep).postMessage(wireValue, { transfer });
+        replyEndpoint.postMessage(wireValue, { transfer });
       }
       finally {
         if (type === MessageType.RELEASE) {
